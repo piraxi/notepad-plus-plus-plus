@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<NotepadPlus>
+    <Session activeView="1">
+        <mainView activeIndex="1">
+            <File firstVisibleLine="7" xOffset="18" scrollWidth="300" startPos="90" endPos="12" selMode="0" offset="0" wrapCount="1" lang="Rust" encoding="-1" userReadOnly="yes" filename="C:\Work\a&amp;b.rs" backupFilePath="C:\Backup\a.rs" originalFileLastModifTimestamp="4294967295" originalFileLastModifTimestampHigh="31234567" tabColourId="2" RTL="no" tabPinned="yes" mapFirstVisibleDisplayLine="-1" mapIsWrap="no">
+                <Mark line="0" />
+                <Mark line="19" />
+                <Fold line="3" />
+            </File>
+            <File filename="C:\Work\日本語 🦀.txt" encoding="1252" startPos="0" endPos="0" futureAttribute="kept">
+                <FutureSetting value="kept" />
+            </File>
+        </mainView>
+        <subView activeIndex="0">
+            <File filename="C:\Work\a&amp;b.rs" startPos="22" endPos="22">
+                <Mark line="5" />
+            </File>
+        </subView>
+        <FileBrowser latestSelectedItem="C:\Work\日本語 🦀.txt">
+            <root foldername="C:\Work">
+                <expanded path="C:\Work\nested" />
+            </root>
+        </FileBrowser>
+    </Session>
+</NotepadPlus>

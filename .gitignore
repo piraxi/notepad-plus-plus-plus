@@ -1,0 +1,47 @@
+# Rust builds, including builds invoked from platform directories
+**/target/
+**/*.rs.bk
+/dist/
+/artifacts/
+
+# Windows build products
+*.exe
+*.dll
+*.pdb
+*.ilk
+*.obj
+*.lib
+*.exp
+*.idb
+*.ipch
+*.pch
+*.tlog
+*.lastbuildstate
+.vs/
+*.user
+*.suo
+
+# macOS build products and metadata
+.DS_Store
+._*
+*.dylib
+*.dSYM/
+*.app/
+*.dmg
+
+# Linux and shared native build products
+*.o
+*.a
+*.so
+*.so.*
+*.AppImage
+*.deb
+*.rpm
+CMakeFiles/
+CMakeCache.txt
+
+# Local editor state and temporary files
+*.swp
+*.swo
+*~
+
