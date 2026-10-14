@@ -81,6 +81,8 @@ fn build_editor() {
             && (parts[1].starts_with("SCI_")
                 || parts[1].starts_with("SC_")
                 || parts[1].starts_with("SCN_")
+                || parts[1].starts_with("SCWS_")
+                || parts[1].starts_with("SCFIND_")
                 || parts[1].starts_with("STYLE_"))
         {
             let number = parts[2].parse::<i64>().ok().or_else(|| {

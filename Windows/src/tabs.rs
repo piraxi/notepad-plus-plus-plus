@@ -35,6 +35,13 @@ unsafe extern "system" fn procedure(
     // SAFETY: This subclass is installed only on the live tab control.
     unsafe {
         match msg {
+            WM_CAPTURECHANGED | WM_CANCELMODE => {
+                RemovePropW(hwnd, windows_sys::core::w!("DragTab"));
+                RemovePropW(hwnd, windows_sys::core::w!("DragOrigin"));
+                if msg == WM_CANCELMODE && GetCapture() == hwnd {
+                    ReleaseCapture();
+                }
+            }
             WM_MBUTTONUP => {
                 if let Some(index) = hit(hwnd, lp) {
                     enqueue(Event::CloseTab(index));
@@ -45,9 +52,17 @@ unsafe extern "system" fn procedure(
                 if let Some(index) = hit(hwnd, lp) {
                     let mut rect = RECT::default();
                     SendMessageW(hwnd, TCM_GETITEMRECT, index, &mut rect as *mut _ as isize);
-                    if lp as i16 as i32 >= rect.right - 22 {
+                    let close_visible = GetPropW(hwnd, windows_sys::core::w!("HideTabClose"))
+                        .is_null()
+                        && (GetPropW(hwnd, windows_sys::core::w!("HideInactiveTabClose"))
+                            .is_null()
+                            || SendMessageW(hwnd, TCM_GETCURSEL, 0, 0) == index as isize);
+                    if close_visible && lp as i16 as i32 >= rect.right - 22 {
                         enqueue(Event::CloseTab(index));
                         return 0;
+                    }
+                    if !GetPropW(hwnd, windows_sys::core::w!("LockTabDrag")).is_null() {
+                        return DefSubclassProc(hwnd, msg, wp, lp);
                     }
                     SetPropW(
                         hwnd,
@@ -57,7 +72,7 @@ unsafe extern "system" fn procedure(
                     SetPropW(
                         hwnd,
                         windows_sys::core::w!("DragOrigin"),
-                        ((lp as u16 as usize) + 1) as HANDLE,
+                        ((lp as u32 as usize) + 1) as HANDLE,
                     );
                     SetCapture(hwnd);
                 }
@@ -69,7 +84,11 @@ unsafe extern "system" fn procedure(
                     ReleaseCapture();
                 }
                 if from != 0
-                    && (lp as i16 as i32 - (origin as i32 - 1)).abs() > GetSystemMetrics(SM_CXDRAG)
+                    && ((lp as i16 as i32 - ((origin - 1) as u16 as i16 as i32)).abs()
+                        > GetSystemMetrics(SM_CXDRAG)
+                        || ((lp >> 16) as i16 as i32 - (((origin - 1) >> 16) as u16 as i16 as i32))
+                            .abs()
+                            > GetSystemMetrics(SM_CYDRAG))
                 {
                     if let Some(to) = hit(hwnd, lp) {
                         enqueue(Event::MoveTab(from - 1, to));
@@ -77,7 +96,14 @@ unsafe extern "system" fn procedure(
                 }
             }
             WM_LBUTTONDBLCLK => {
-                if hit(hwnd, lp).is_none() {
+                RemovePropW(hwnd, windows_sys::core::w!("DragTab"));
+                RemovePropW(hwnd, windows_sys::core::w!("DragOrigin"));
+                if GetCapture() == hwnd {
+                    ReleaseCapture();
+                }
+                if let Some(index) = hit(hwnd, lp) {
+                    enqueue(Event::DoubleClickTab(index));
+                } else {
                     enqueue(Event::Command(IDM_FILE_NEW));
                 }
                 return 0;
@@ -125,6 +151,57 @@ unsafe extern "system" fn procedure(
             _ => {}
         }
         DefSubclassProc(hwnd, msg, wp, lp)
+    }
+}
+
+pub fn compact_label(name: &str, limit: u32) -> String {
+    let name_utf16: Vec<u16> = name.encode_utf16().chain(Some(0)).collect();
+    if limit == 0 || name_utf16.len() <= limit as usize + 1 {
+        return name.to_owned();
+    }
+    let mut output = vec![0u16; limit as usize + 1];
+    unsafe {
+        if windows_sys::Win32::UI::Shell::PathCompactPathExW(
+            output.as_mut_ptr(),
+            name_utf16.as_ptr(),
+            output.len() as u32,
+            0,
+        ) == 0
+        {
+            return name.to_owned();
+        }
+    }
+    let length = output.iter().position(|&c| c == 0).unwrap_or(output.len());
+    String::from_utf16(&output[..length]).unwrap_or_else(|_| name.to_owned())
+}
+
+pub fn close_buttons(hwnd: HWND, show: bool, inactive: bool) {
+    unsafe {
+        for (name, hide) in [
+            (windows_sys::core::w!("HideTabClose"), !show),
+            (windows_sys::core::w!("HideInactiveTabClose"), !inactive),
+        ] {
+            if hide {
+                SetPropW(hwnd, name, 1usize as HANDLE);
+            } else {
+                RemovePropW(hwnd, name);
+            }
+        }
+    }
+}
+
+pub fn lock_drag(hwnd: HWND, locked: bool) {
+    unsafe {
+        if locked {
+            SetPropW(hwnd, windows_sys::core::w!("LockTabDrag"), 1usize as HANDLE);
+            RemovePropW(hwnd, windows_sys::core::w!("DragTab"));
+            RemovePropW(hwnd, windows_sys::core::w!("DragOrigin"));
+            if GetCapture() == hwnd {
+                ReleaseCapture();
+            }
+        } else {
+            RemovePropW(hwnd, windows_sys::core::w!("LockTabDrag"));
+        }
     }
 }
 

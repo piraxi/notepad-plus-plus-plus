@@ -29,6 +29,7 @@ pub struct Workspace {
     active: Option<BufferId>,
     next_id: u64,
     recently_closed: VecDeque<RecentFile>,
+    recent_limit: Option<usize>,
     untitled_names: HashMap<BufferId, (usize, String)>,
 }
 
@@ -68,6 +69,78 @@ impl Workspace {
             return None;
         }
         self.untitled_names.get(&id).map(|(_, name)| name.as_str())
+    }
+    /// Keep an untitled buffer's content-derived name unique across open tabs.
+    pub fn name_from_first_line(&mut self, id: BufferId) {
+        let Some(doc) = self.get(id) else {
+            return;
+        };
+        if doc.path().is_some() {
+            return;
+        }
+        let mut units = 0;
+        let name: String = doc
+            .text()
+            .split(['\r', '\n'])
+            .next()
+            .unwrap_or("")
+            .trim()
+            .chars()
+            .filter(|c| !c.is_control() && !"<>:\"/\\|?*".contains(*c))
+            .take_while(|c| {
+                units += c.len_utf16();
+                units <= 63
+            })
+            .collect();
+        let name = name.trim();
+        if name.is_empty()
+            || self.buffers().any(|(other, doc)| {
+                other != id
+                    && (self.untitled_name(other) == Some(name)
+                        || doc
+                            .path()
+                            .and_then(|p| p.file_name())
+                            .is_some_and(|n| n == name))
+            })
+        {
+            return;
+        }
+        if let Some((_, current)) = self.untitled_names.get_mut(&id) {
+            *current = name.to_owned();
+        }
+    }
+
+    pub fn recent_limit(&self) -> usize {
+        self.recent_limit.unwrap_or(10)
+    }
+    pub fn set_recent_limit(&mut self, limit: usize) {
+        self.recent_limit = Some(limit.min(30));
+        self.recently_closed.truncate(self.recent_limit());
+    }
+    pub fn recent_files(&self) -> impl Iterator<Item = &RecentFile> {
+        self.recently_closed.iter()
+    }
+    pub fn restore_recent_files(&mut self, entries: impl IntoIterator<Item = RecentFile>) {
+        self.recently_closed.clear();
+        if self.recent_limit() == 0 {
+            return;
+        }
+        for entry in entries {
+            if !self
+                .recently_closed
+                .iter()
+                .any(|existing| existing.path == entry.path)
+                && !self
+                    .buffers
+                    .iter()
+                    .any(|(_, doc)| doc.path() == Some(entry.path.as_path()))
+            {
+                self.recently_closed.push_back(entry);
+                if self.recently_closed.len() == self.recent_limit() {
+                    break;
+                }
+            }
+        }
     }
     pub fn latest_closed_path(&self) -> Option<&Path> {
         self.recently_closed
@@ -206,7 +279,7 @@ impl Workspace {
                 path: path.to_owned(),
                 encoding: document.saved_encoding(),
             });
-            self.recently_closed.truncate(10);
+            self.recently_closed.truncate(self.recent_limit());
         }
         if self.active == Some(id) {
             self.active = self

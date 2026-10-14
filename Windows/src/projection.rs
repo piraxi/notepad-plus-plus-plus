@@ -1,5 +1,5 @@
-//! The native edit control displays CRLF and uses UTF-16 positions. The core
-//! retains the original line endings and uses UTF-8 positions.
+//! Preserve source line endings in Scintilla while mapping the legacy UI's
+//! UTF-16 positions to the Rust document's UTF-8 positions.
 use npp_editor_core::{Document, EditError, Selection};
 
 pub struct Projection {
@@ -17,17 +17,18 @@ impl Projection {
         while let Some((start, ch)) = chars.next() {
             match ch {
                 '\r' => {
-                    text.push_str("\r\n");
+                    text.push('\r');
                     if chars.peek().is_some_and(|(_, c)| *c == '\n') {
                         chars.next();
+                        text.push('\n');
                         offsets.extend([start + 1, start + 2]);
                     } else {
-                        offsets.extend([start, start + 1]);
+                        offsets.push(start + 1);
                     }
                 }
                 '\n' => {
-                    text.push_str("\r\n");
-                    offsets.extend([start, start + 1]);
+                    text.push('\n');
+                    offsets.push(start + 1);
                 }
                 _ => {
                     text.push(ch);
@@ -61,7 +62,21 @@ impl Projection {
         }
     }
 
+    #[cfg(test)]
     pub fn apply(&self, document: &mut Document, display: &str) -> Result<(), EditError> {
+        self.apply_change(document, display, true)
+    }
+
+    pub fn apply_exact(&self, document: &mut Document, display: &str) -> Result<(), EditError> {
+        self.apply_change(document, display, false)
+    }
+
+    fn apply_change(
+        &self,
+        document: &mut Document,
+        display: &str,
+        convert_endings: bool,
+    ) -> Result<(), EditError> {
         if display == self.text {
             return Ok(());
         }
@@ -85,9 +100,13 @@ impl Projection {
         let suffix = self.text.len() - old_end;
         let start = self.byte_offset(self.text[..prefix].encode_utf16().count());
         let end = self.byte_offset(self.text[..self.text.len() - suffix].encode_utf16().count());
-        let replacement = document
-            .line_ending()
-            .convert(&display[prefix..display.len() - suffix]);
+        let replacement = if convert_endings {
+            document
+                .line_ending()
+                .convert(&display[prefix..display.len() - suffix])
+        } else {
+            display[prefix..display.len() - suffix].to_owned()
+        };
         document.replace(start..end, &replacement)
     }
 }

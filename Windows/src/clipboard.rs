@@ -81,6 +81,170 @@ pub fn write_text(owner: HWND, text: &str) -> io::Result<()> {
     Ok(())
 }
 
+pub fn write_binary(owner: HWND, bytes: &[u8]) -> io::Result<()> {
+    let length = u32::try_from(bytes.len()).map_err(io::Error::other)?;
+    let mut payload = bytes.to_vec();
+    payload.push(0);
+    unsafe {
+        if OpenClipboard(owner) == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let _clipboard = Clipboard;
+        let format = RegisterClipboardFormatW(windows_sys::core::w!("Notepad++ Binary Length"));
+        if format == 0 || EmptyClipboard() == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        for (format, bytes) in [
+            (1, payload.as_slice()),
+            (format, length.to_le_bytes().as_slice()),
+        ] {
+            let mut memory = TextMemory(GlobalAlloc(GMEM_MOVEABLE, bytes.len()));
+            if memory.0.is_null() {
+                return Err(io::Error::last_os_error());
+            }
+            let pointer = GlobalLock(memory.0).cast::<u8>();
+            if pointer.is_null() {
+                return Err(io::Error::last_os_error());
+            }
+            std::ptr::copy_nonoverlapping(bytes.as_ptr(), pointer, bytes.len());
+            GlobalUnlock(memory.0);
+            if SetClipboardData(format, memory.0).is_null() {
+                return Err(io::Error::last_os_error());
+            }
+            memory.0 = null_mut();
+        }
+    }
+    Ok(())
+}
+
+pub fn read_binary(owner: HWND) -> io::Result<Option<Vec<u8>>> {
+    unsafe {
+        if IsClipboardFormatAvailable(1) == 0 {
+            return Ok(None);
+        }
+        if OpenClipboard(owner) == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let _clipboard = Clipboard;
+        let memory = GetClipboardData(1);
+        if memory.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+        let size = GlobalSize(memory);
+        let pointer = GlobalLock(memory).cast::<u8>();
+        if pointer.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+        let bytes = std::slice::from_raw_parts(pointer, size).to_vec();
+        GlobalUnlock(memory);
+        let format = RegisterClipboardFormatW(windows_sys::core::w!("Notepad++ Binary Length"));
+        let length = if IsClipboardFormatAvailable(format) != 0 {
+            let memory = GetClipboardData(format);
+            if memory.is_null() || GlobalSize(memory) < 4 {
+                return Err(io::Error::other("Invalid binary clipboard length"));
+            }
+            let pointer = GlobalLock(memory).cast::<u32>();
+            if pointer.is_null() {
+                return Err(io::Error::last_os_error());
+            }
+            let length = pointer.read_unaligned() as usize;
+            GlobalUnlock(memory);
+            length
+        } else {
+            bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len())
+        };
+        if length > bytes.len() {
+            return Err(io::Error::other("Binary clipboard length exceeds its data"));
+        }
+        Ok(Some(bytes[..length].to_vec()))
+    }
+}
+
+pub fn write_line(owner: HWND, text: &str) -> io::Result<()> {
+    write_shaped(
+        owner,
+        text,
+        &[
+            "MSDEVLineSelect",
+            "VisualStudioEditorOperationsLineCutCopyClipboardTag",
+        ],
+    )
+}
+
+pub fn write_column(owner: HWND, text: &str) -> io::Result<()> {
+    write_shaped(owner, text, &["MSDEVColumnSelect"])?;
+    // Scintilla also publishes Borland's single-byte rectangular block tag.
+    unsafe {
+        if OpenClipboard(owner) == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let _clipboard = Clipboard;
+        let format = RegisterClipboardFormatW(windows_sys::core::w!("Borland IDE Block Type"));
+        if format == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let mut memory = TextMemory(GlobalAlloc(GMEM_MOVEABLE, 1));
+        if memory.0.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+        let pointer = GlobalLock(memory.0).cast::<u8>();
+        if pointer.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+        *pointer = 2;
+        GlobalUnlock(memory.0);
+        if SetClipboardData(format, memory.0).is_null() {
+            return Err(io::Error::last_os_error());
+        }
+        memory.0 = null_mut();
+    }
+    Ok(())
+}
+
+fn write_shaped(owner: HWND, text: &str, markers: &[&str]) -> io::Result<()> {
+    write_text(owner, text)?;
+    unsafe {
+        if OpenClipboard(owner) == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let _clipboard = Clipboard;
+        for name in markers {
+            let name: Vec<u16> = name.encode_utf16().chain(Some(0)).collect();
+            let format = RegisterClipboardFormatW(name.as_ptr());
+            let mut memory = TextMemory::new(OsStr::new(""))?;
+            if format == 0 || SetClipboardData(format, memory.0).is_null() {
+                return Err(io::Error::last_os_error());
+            }
+            memory.0 = null_mut();
+        }
+    }
+    Ok(())
+}
+
+pub fn is_column(owner: HWND) -> io::Result<bool> {
+    // Scintilla accepts both Microsoft's and Borland's rectangular markers.
+    unsafe {
+        if IsClipboardFormatAvailable(RegisterClipboardFormatW(windows_sys::core::w!(
+            "MSDEVColumnSelect"
+        ))) != 0
+        {
+            return Ok(true);
+        }
+    }
+    Ok(read_registered(owner, "Borland IDE Block Type")?.is_some_and(|bytes| bytes == [2]))
+}
+
+pub fn is_line() -> bool {
+    unsafe {
+        IsClipboardFormatAvailable(RegisterClipboardFormatW(windows_sys::core::w!(
+            "MSDEVLineSelect"
+        ))) != 0
+            || IsClipboardFormatAvailable(RegisterClipboardFormatW(windows_sys::core::w!(
+                "VisualStudioEditorOperationsLineCutCopyClipboardTag"
+            ))) != 0
+    }
+}
+
 pub fn read_registered(owner: HWND, name: &str) -> io::Result<Option<Vec<u8>>> {
     let name: Vec<u16> = name.encode_utf16().chain(Some(0)).collect();
     unsafe {

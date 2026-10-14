@@ -117,7 +117,18 @@ impl Document {
         let range = self.selection().range();
         let starts = self.line_starts();
         let line = starts.partition_point(|&p| p <= range.start) - 1;
-        let prefix = &self.text()[starts[line]..range.start];
+        let mut prefix = &self.text()[starts[line]..range.start];
+        if basic_indent && prefix.is_empty() {
+            // Notepad++ Basic mode skips zero-length preceding lines, but
+            // whitespace-only lines still supply their own indentation.
+            for previous in (0..line).rev() {
+                let content = self.line_content(starts, previous);
+                if !content.is_empty() {
+                    prefix = &self.text()[content];
+                    break;
+                }
+            }
+        }
         let mut replacement = self.line_ending().as_str().to_owned();
         let mut end = range.end;
         let mut caret = range.start + replacement.len();

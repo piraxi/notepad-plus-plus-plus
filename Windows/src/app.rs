@@ -27,7 +27,10 @@ use windows_sys::{
         Foundation::*,
         Graphics::Gdi::*,
         System::LibraryLoader::*,
-        System::SystemServices::{MK_CONTROL, MK_SHIFT},
+        System::SystemServices::{
+            APPCOMMAND_BROWSER_BACKWARD, APPCOMMAND_BROWSER_FORWARD, MK_CONTROL, MK_RBUTTON,
+            MK_SHIFT,
+        },
         UI::{
             Controls::{Dialogs::*, *},
             Input::KeyboardAndMouse::*,
@@ -38,6 +41,14 @@ use windows_sys::{
     core::w,
 };
 
+// Keep dynamic history/control IDs outside the 500-entry UDL command range.
+const RECENT_FILE_FIRST: u32 = 63000;
+const RECENT_FILE_LAST: u32 = RECENT_FILE_FIRST + 29;
+const POST_IT_RESTORE: i32 = 63031;
+const _: () = assert!(
+    crate::languages::USER_LANGUAGE_FIRST + crate::languages::USER_LANGUAGE_LIMIT as u32
+        <= RECENT_FILE_FIRST
+);
 const EDIT_ID: usize = 101;
 const TAB_ID: usize = 102;
 const STATUS_ID: usize = 103;
@@ -163,6 +174,7 @@ const EDIT_COMMANDS: &[u32] = &[
     IDM_EDIT_REMOVEEMPTYLINES,
     IDM_EDIT_REMOVEEMPTYLINESWITHBLANK,
     IDM_EDIT_JOIN_LINES,
+    IDM_EDIT_SPLIT_LINES,
     IDM_EDIT_LINE_UP,
     IDM_EDIT_LINE_DOWN,
     IDM_EDIT_BLANKLINEABOVECURRENT,
@@ -184,6 +196,8 @@ const EDIT_COMMANDS: &[u32] = &[
     IDM_EDIT_UNDO,
     IDM_EDIT_REDO,
     IDM_EDIT_CUT,
+    IDM_EDIT_CUT_BINARY,
+    IDM_EDIT_PASTE_BINARY,
     IDM_EDIT_PASTE,
     IDM_FORMAT_TODOS,
     IDM_FORMAT_TOUNIX,
@@ -199,8 +213,10 @@ const EDIT_COMMANDS: &[u32] = &[
     CONVERT_UTF16BE_NO_BOM,
 ];
 pub(crate) enum Event {
+    BookmarkMargin(usize),
     LiteralCharacter(char),
     NativeChanged,
+    RehideMarkedLines,
     GoTo(i64, bool),
     GoToRefresh,
     Wheel(i32, bool),
@@ -225,6 +241,7 @@ pub(crate) enum Event {
     Selection(usize, usize),
     Tab(usize),
     CloseTab(usize),
+    DoubleClickTab(usize),
     MoveTab(usize, usize),
     Resize,
     Close,
@@ -266,6 +283,37 @@ fn resize_controls(window: HWND) {
     unsafe {
         let mut rect = RECT::default();
         GetClientRect(window, &mut rect);
+        let restore = GetDlgItem(window, POST_IT_RESTORE);
+        if !restore.is_null() {
+            let dpi = windows_sys::Win32::UI::HiDpi::GetDpiForWindow(window).max(96) as i32;
+            let width = 110 * dpi / 96;
+            let height = 26 * dpi / 96;
+            SetWindowPos(
+                restore,
+                HWND_TOP,
+                (rect.right - width - 4).max(0),
+                4,
+                width,
+                height,
+                SWP_NOACTIVATE,
+            );
+        }
+        if !GetPropW(window, w!("DistractionFree")).is_null() {
+            let divisor = (GetPropW(window, w!("DistractionDivisor")) as usize).clamp(3, 9);
+            let padding = rect.right.max(0) / divisor as i32;
+            crate::scintilla::send(
+                GetDlgItem(window, EDIT_ID as i32),
+                crate::scintilla::ids::SCI_SETMARGINLEFT,
+                0,
+                padding as isize,
+            );
+            crate::scintilla::send(
+                GetDlgItem(window, EDIT_ID as i32),
+                crate::scintilla::ids::SCI_SETMARGINRIGHT,
+                0,
+                padding as isize,
+            );
+        }
         let hidden = is_status_hidden(window);
         let tabs_hidden = is_control_hidden(window, TAB_ID);
         let toolbar_height = if is_control_hidden(window, crate::editor_chrome::TOOLBAR as usize) {
@@ -276,7 +324,7 @@ fn resize_controls(window: HWND) {
         let gutter_width = if is_control_hidden(window, crate::editor_chrome::GUTTER as usize) {
             0
         } else {
-            52
+            crate::scintilla::line_number_width(GetDlgItem(window, EDIT_ID as i32)) as i32
         };
         crate::scintilla::send(
             GetDlgItem(window, EDIT_ID as i32),
@@ -285,7 +333,25 @@ fn resize_controls(window: HWND) {
             gutter_width as isize,
         );
         let gutter_width = 0;
-        let top = toolbar_height + if tabs_hidden { 0 } else { 28 };
+        let tabs = GetDlgItem(window, TAB_ID as i32);
+        // Set width before asking for row count; wrapping depends on this width.
+        MoveWindow(tabs, 0, toolbar_height, rect.right.max(0), 28, 0);
+        let tab_height = if tabs_hidden {
+            0
+        } else if GetWindowLongPtrW(tabs, GWL_STYLE) as u32 & TCS_MULTILINE != 0 {
+            let rows = SendMessageW(tabs, TCM_GETROWCOUNT, 0, 0).max(1) as i32;
+            let mut item = RECT::default();
+            let height =
+                if SendMessageW(tabs, TCM_GETITEMRECT, 0, &mut item as *mut _ as isize) != 0 {
+                    (item.bottom - item.top).max(1)
+                } else {
+                    24
+                };
+            rows.saturating_mul(height).saturating_add(6)
+        } else {
+            28
+        };
+        let top = toolbar_height + tab_height;
         let result_list = GetDlgItem(window, crate::find_files::RESULTS);
         let result_height = if !result_list.is_null()
             && GetWindowLongPtrW(result_list, GWL_STYLE) as u32 & WS_VISIBLE != 0
@@ -334,7 +400,7 @@ fn resize_controls(window: HWND) {
             0,
             toolbar_height,
             rect.right,
-            28,
+            tab_height,
             1,
         );
         MoveWindow(
@@ -401,7 +467,57 @@ unsafe extern "system" fn edit_proc(
     _: usize,
 ) -> LRESULT {
     // SAFETY: Windows invokes this subclass with a live HWND on the UI thread.
+    thread_local! { static REDIRECTING_WHEEL: Cell<bool> = const { Cell::new(false) }; }
+    thread_local! { static RIGHT_WHEEL_SWITCH: Cell<bool> = const { Cell::new(false) }; }
     unsafe {
+        if message == WM_RBUTTONDOWN {
+            RIGHT_WHEEL_SWITCH.set(false);
+        }
+        if message == WM_CONTEXTMENU && lp != -1 && RIGHT_WHEEL_SWITCH.get() {
+            return 0;
+        }
+        if message == WM_RBUTTONUP && RIGHT_WHEEL_SWITCH.get() {
+            // Consume release so the completed tab gesture does not open a popup.
+            RIGHT_WHEEL_SWITCH.set(false);
+            return 0;
+        }
+        if matches!(message, WM_MOUSEWHEEL | WM_MOUSEHWHEEL)
+            && !REDIRECTING_WHEEL.get()
+            && GetPropW(hwnd, w!("DisableAdvancedScrolling")).is_null()
+        {
+            let target = WindowFromPoint(POINT {
+                x: lp as i16 as i32,
+                y: (lp >> 16) as i16 as i32,
+            });
+            let mut class = [0u16; 64];
+            let length = GetClassNameW(target, class.as_mut_ptr(), class.len() as i32);
+            let synaptics = String::from_utf16_lossy(&class[..length.max(0) as usize])
+                == "SynTrackCursorWindowClass";
+            // Redirect within this UI thread; never block on an unrelated app.
+            if !target.is_null()
+                && target != hwnd
+                && !synaptics
+                && GetWindowThreadProcessId(target, null_mut())
+                    == GetWindowThreadProcessId(hwnd, null_mut())
+            {
+                REDIRECTING_WHEEL.set(true);
+                let result = SendMessageW(target, message, wp, lp);
+                REDIRECTING_WHEEL.set(false);
+                return result;
+            }
+        }
+        if message == WM_MOUSEWHEEL && wp & MK_RBUTTON as usize != 0 {
+            let delta = (wp >> 16) as u16 as i16;
+            if delta != 0 {
+                RIGHT_WHEEL_SWITCH.set(true);
+                enqueue(Event::Command(if delta > 0 {
+                    IDM_VIEW_TAB_PREV
+                } else {
+                    IDM_VIEW_TAB_NEXT
+                }));
+            }
+            return 0;
+        }
         if message == WM_MOUSEHWHEEL || (message == WM_MOUSEWHEEL && wp & MK_SHIFT as usize != 0) {
             let horizontal = message == WM_MOUSEHWHEEL;
             let delta = ((wp >> 16) as u16 as i16) as i32;
@@ -416,20 +532,44 @@ unsafe extern "system" fn edit_proc(
                 return 0;
             }
         }
+        if message == WM_KEYDOWN && !GetPropW(hwnd, w!("ColumnToMulti")).is_null() {
+            use crate::scintilla::{ids::*, send};
+            let mode = send(hwnd, SCI_GETSELECTIONMODE, 0, 0) as u32;
+            if matches!(mode, SC_SEL_RECTANGLE | SC_SEL_THIN) {
+                if matches!(
+                    wp as u16,
+                    VK_LEFT | VK_RIGHT | VK_UP | VK_DOWN | VK_HOME | VK_END | VK_RETURN | VK_BACK
+                ) {
+                    send(hwnd, SCI_SETSELECTIONMODE, SC_SEL_STREAM as usize, 0);
+                    send(hwnd, SCI_SETSELECTIONMODE, SC_SEL_STREAM as usize, 0);
+                } else if wp == VK_ESCAPE as usize {
+                    let main = send(hwnd, SCI_GETMAINSELECTION, 0, 0) as usize;
+                    let caret = send(hwnd, SCI_GETSELECTIONNCARET, main, 0);
+                    send(hwnd, SCI_SETSELECTION, caret as usize, caret);
+                    send(hwnd, SCI_SETSELECTIONMODE, SC_SEL_STREAM as usize, 0);
+                }
+            }
+        }
+        // Native commands retain every caret for multi-selection newline/tab
+        // edits; the single-selection core commands would collapse the ranges.
+        let multi_selection = matches!(message, WM_KEYDOWN | WM_CHAR)
+            && matches!(wp, x if x == VK_RETURN as usize || x == VK_TAB as usize)
+            && crate::scintilla::send(hwnd, crate::scintilla::ids::SCI_GETSELECTIONS, 0, 0) > 1;
         // TranslateMessage still posts WM_CHAR. Keep Scintilla's key-down
         // bindings from inserting a second newline/tab before our core edit.
         if message == WM_KEYDOWN
+            && !multi_selection
             && matches!(wp, x if x == VK_RETURN as usize || x == VK_TAB as usize)
         {
             return 0;
         }
-        if message == WM_CHAR && wp == VK_RETURN as usize {
+        if message == WM_CHAR && wp == VK_RETURN as usize && !multi_selection {
             let (start, end) = control_selection(hwnd);
             enqueue(Event::Selection(start, end));
             enqueue(Event::Command(INSERT_NEWLINE));
             return 0;
         }
-        if message == WM_CHAR && wp == VK_TAB as usize {
+        if message == WM_CHAR && wp == VK_TAB as usize && !multi_selection {
             let (start, end) = control_selection(hwnd);
             enqueue(Event::Selection(start, end));
             enqueue(Event::Command(if GetKeyState(VK_SHIFT as i32) < 0 {
@@ -511,6 +651,30 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
             {
                 enqueue(Event::OpenFindFileResult(
                     SendMessageW(lp as HWND, LB_GETCURSEL, 0, 0) as usize,
+                ));
+                0
+            }
+            WM_APPCOMMAND => {
+                // GET_APPCOMMAND_LPARAM excludes the input-device flag bits.
+                let command = ((lp as usize >> 16) & 0x0fff) as u32;
+                if command == APPCOMMAND_BROWSER_BACKWARD || command == APPCOMMAND_BROWSER_FORWARD {
+                    enqueue(Event::Command(if command == APPCOMMAND_BROWSER_FORWARD {
+                        IDM_VIEW_TAB_NEXT
+                    } else {
+                        IDM_VIEW_TAB_PREV
+                    }));
+                    1
+                } else {
+                    DefWindowProcW(hwnd, message, wp, lp)
+                }
+            }
+            WM_COMMAND if wp & 0xffff == POST_IT_RESTORE as usize => {
+                enqueue(Event::Command(
+                    if GetPropW(hwnd, w!("DistractionFree")).is_null() {
+                        IDM_VIEW_POSTIT
+                    } else {
+                        IDM_VIEW_DISTRACTIONFREE
+                    },
                 ));
                 0
             }
@@ -629,6 +793,19 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
                     use crate::scintilla::ids::*;
                     if notification.code == SCN_MODIFIED {
                         let detail = &*(lp as *const crate::scintilla::Notification);
+                        if detail.modification_type as u32
+                            & (SC_MOD_INSERTTEXT | SC_MOD_DELETETEXT | SC_MOD_CHANGEFOLD)
+                            != 0
+                        {
+                            EVENTS.with_borrow_mut(|events| {
+                                if !events
+                                    .iter()
+                                    .any(|event| matches!(event, Event::RehideMarkedLines))
+                                {
+                                    events.push_back(Event::RehideMarkedLines);
+                                }
+                            });
+                        }
                         if detail.modification_type as u32 & (SC_MOD_INSERTTEXT | SC_MOD_DELETETEXT)
                             != 0
                         {
@@ -640,6 +817,55 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
                                     events.push_back(Event::NativeChanged);
                                 }
                             });
+                        }
+                    } else if notification.code == SCN_MARGINCLICK {
+                        let detail = &*(lp as *const crate::scintilla::Notification);
+                        if detail.margin == 1 && detail.modifiers == 0 {
+                            let line = crate::scintilla::send(
+                                notification.hwndFrom,
+                                SCI_LINEFROMPOSITION,
+                                detail.position.max(0) as usize,
+                                0,
+                            );
+                            if line >= 0
+                                && !crate::scintilla::reveal_hidden_lines(
+                                    notification.hwndFrom,
+                                    line as usize,
+                                )
+                            {
+                                enqueue(Event::BookmarkMargin(line as usize));
+                            }
+                        }
+                    } else if notification.code == SCN_MARGINRIGHTCLICK {
+                        let detail = &*(lp as *const crate::scintilla::Notification);
+                        if detail.margin == 1 && detail.modifiers == 0 {
+                            let search = GetSubMenu(crate::plugin_host::main_menu(hwnd), 2);
+                            for index in 0..GetMenuItemCount(search) {
+                                let submenu = GetSubMenu(search, index);
+                                if !submenu.is_null()
+                                    && GetMenuState(
+                                        submenu,
+                                        IDM_SEARCH_TOGGLE_BOOKMARK,
+                                        MF_BYCOMMAND,
+                                    ) != u32::MAX
+                                {
+                                    let mut point = POINT::default();
+                                    GetCursorPos(&mut point);
+                                    let command = TrackPopupMenu(
+                                        submenu,
+                                        TPM_RETURNCMD | TPM_RIGHTBUTTON,
+                                        point.x,
+                                        point.y,
+                                        0,
+                                        hwnd,
+                                        null(),
+                                    );
+                                    if command != 0 {
+                                        enqueue(Event::Command(command as u32));
+                                    }
+                                    break;
+                                }
+                            }
                         }
                     } else if notification.code == SCN_UPDATEUI {
                         let (start, end) = control_selection(notification.hwndFrom);
@@ -674,12 +900,45 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
     }
 }
 
+type HiddenSectionsSnapshot = (Vec<(usize, usize)>, std::sync::Arc<()>);
+type RecentMenuSnapshot = (usize, i32, bool, Vec<PathBuf>);
+
 struct App {
     applied_language: Option<u32>,
     fold_states: std::collections::HashMap<BufferId, Vec<usize>>,
+    hidden_sections: std::collections::HashMap<BufferId, HiddenSectionsSnapshot>,
+    rtl_buffers: std::collections::HashSet<BufferId>,
+    native_selections:
+        std::collections::HashMap<BufferId, (Vec<u8>, Selection, std::sync::Arc<()>)>,
+    show_non_printing: Cell<bool>,
+    show_controls: Cell<bool>,
+    copy_cut_line: bool,
+    double_click_close: bool,
+    exit_last_tab: bool,
+    lock_tab_drag: bool,
+    multiline_tabs: bool,
+    content_tab_names: bool,
+    persist_history: bool,
+    recent_label_length: i32,
+    caret_width: usize,
+    current_line_mode: usize,
+    current_line_frame: usize,
+    fold_symbol_style: usize,
+    edge_columns: Vec<usize>,
+    edge_background: bool,
+    short_title: bool,
+    save_all_confirm: bool,
+    compact_tab_length: u32,
+    tab_close_buttons: bool,
+    inactive_tab_buttons: bool,
+    search_engine: String,
+    horizontal_scroll: std::collections::HashMap<BufferId, (usize, usize)>,
     user_languages: Vec<crate::languages::Language>,
     languages: std::collections::HashMap<BufferId, u32>,
+    default_languages: std::collections::HashSet<BufferId>,
     fullscreen: Option<(isize, RECT)>,
+    post_it: Option<(isize, bool, bool, bool, bool, bool)>,
+    distraction_free: Option<(isize, isize, bool)>,
     last_regex_empty: Option<(BufferId, usize, String)>,
     word_wrap: bool,
     macro_recording: bool,
@@ -692,6 +951,8 @@ struct App {
     workspace: Workspace,
     launch_availability: std::cell::RefCell<Option<(PathBuf, bool, bool)>>,
     selection_gesture: npp_editor_core::SelectionGesture,
+    column_selection_gesture: bool,
+    multi_select_flags: usize,
     projection: Projection,
     displayed_buffer: Option<BufferId>,
     first_visible_lines: std::collections::HashMap<BufferId, usize>,
@@ -705,9 +966,22 @@ struct App {
     tab_width: std::num::NonZeroUsize,
     indentation_style: IndentationStyle,
     basic_auto_indent: bool,
+    advanced_indent: bool,
+    new_document_eol: usize,
+    new_document_encoding: usize,
+    new_document_language: u32,
+    check_history_files: bool,
+    recent_in_submenu: bool,
+    selected_text_foreground: bool,
+    sql_backslash_escape: bool,
+    compact_language_menu: bool,
+    excluded_languages: Vec<u32>,
+    recent_menu_snapshot: RefCell<Option<RecentMenuSnapshot>>,
     zoom: i32,
     wheel_remainder: i32,
     horizontal_wheel_remainder: i32,
+    find_files_prefer_disk: bool,
+    rendering_mode: usize,
     date_first: bool,
     date_format: String,
     zoom_font: HFONT,
@@ -843,9 +1117,38 @@ impl App {
             let mut app = Self {
                 applied_language: None,
                 fold_states: Default::default(),
+                hidden_sections: Default::default(),
+                rtl_buffers: Default::default(),
+                native_selections: Default::default(),
+                show_non_printing: Cell::new(false),
+                show_controls: Cell::new(true),
+                copy_cut_line: true,
+                double_click_close: false,
+                exit_last_tab: false,
+                lock_tab_drag: false,
+                multiline_tabs: false,
+                content_tab_names: false,
+                persist_history: visible,
+                recent_label_length: -1,
+                caret_width: 1,
+                current_line_mode: 1,
+                current_line_frame: 1,
+                fold_symbol_style: 4,
+                edge_columns: Vec::new(),
+                edge_background: false,
+                short_title: false,
+                save_all_confirm: true,
+                compact_tab_length: 0,
+                tab_close_buttons: true,
+                inactive_tab_buttons: false,
+                search_engine: crate::preferences::Preferences::default().search_engine,
+                horizontal_scroll: Default::default(),
                 user_languages: crate::languages::load_user(),
                 languages: Default::default(),
+                default_languages: Default::default(),
                 fullscreen: None,
+                post_it: None,
+                distraction_free: None,
                 last_regex_empty: None,
                 word_wrap: false,
                 macro_recording: false,
@@ -858,6 +1161,8 @@ impl App {
                 workspace: Workspace::default(),
                 launch_availability: Default::default(),
                 selection_gesture: npp_editor_core::SelectionGesture::default(),
+                column_selection_gesture: false,
+                multi_select_flags: 0,
                 projection: Projection::new(""),
                 displayed_buffer: None,
                 first_visible_lines: Default::default(),
@@ -871,9 +1176,22 @@ impl App {
                 tab_width: std::num::NonZeroUsize::new(4).unwrap(),
                 indentation_style: IndentationStyle::default(),
                 basic_auto_indent: true,
+                advanced_indent: true,
+                new_document_eol: 0,
+                new_document_encoding: 0,
+                new_document_language: IDM_LANG_TEXT,
+                check_history_files: false,
+                recent_in_submenu: true,
+                selected_text_foreground: false,
+                sql_backslash_escape: true,
+                compact_language_menu: true,
+                excluded_languages: Vec::new(),
+                recent_menu_snapshot: RefCell::new(None),
                 zoom: i32::MIN,
                 wheel_remainder: 0,
                 horizontal_wheel_remainder: 0,
+                find_files_prefer_disk: false,
+                rendering_mode: 0,
                 date_first: false,
                 date_format: crate::date_time::DEFAULT_CUSTOM_FORMAT.to_owned(),
                 zoom_font: null_mut(),
@@ -896,10 +1214,45 @@ impl App {
                     Err(error) if error.kind() == io::ErrorKind::NotFound => {}
                     Err(error) => app.report(format!("Cannot load preferences: {error}")),
                 }
+                if !crate::scintilla::configure_rendering(app.edit, app.rendering_mode) {
+                    app.report("The selected DirectWrite rendering mode could not be loaded. The editor is using GDI. You can change the mode in Preferences > Rendering.");
+                }
+                match crate::recent_files::load(&mut app.workspace) {
+                    Ok(()) => {
+                        if app.check_history_files {
+                            let missing: Vec<_> = app
+                                .workspace
+                                .recent_files()
+                                .filter(|entry| !entry.path.is_file())
+                                .map(|entry| entry.path.clone())
+                                .collect();
+                            for path in missing {
+                                app.workspace.forget_recent_path(&path);
+                            }
+                            app.save_recent_files();
+                        }
+                        app.caption();
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                    Err(error) => app.report(format!("Cannot load recent files: {error}")),
+                }
+                let document = app.new_document();
+                *app.document_mut() = document;
+                app.languages
+                    .insert(app.active_id(), app.new_document_language);
+                app.default_languages.insert(app.active_id());
+                app.refresh();
                 ShowWindow(window, SW_SHOW);
                 SetFocus(app.edit);
             }
             Ok(app)
+        }
+    }
+    fn save_recent_files(&self) {
+        if self.persist_history {
+            if let Err(error) = crate::recent_files::save(&self.workspace) {
+                self.report(format!("Cannot save recent files: {error}"));
+            }
         }
     }
     fn active_id(&self) -> BufferId {
@@ -909,7 +1262,7 @@ impl App {
     }
     fn set_tab_width(&mut self, width: usize) -> io::Result<()> {
         let width = std::num::NonZeroUsize::new(width)
-            .filter(|width| matches!(width.get(), 2 | 4 | 8))
+            .filter(|width| (1..=32).contains(&width.get()))
             .ok_or_else(|| io::Error::other("Unsupported tab width"))?;
         let spacing = (width.get() * 4) as u32;
         // SAFETY: The multiline edit and menu belong to this UI thread. The
@@ -922,7 +1275,8 @@ impl App {
             let command = match width.get() {
                 2 => TAB_WIDTH_2,
                 4 => TAB_WIDTH_4,
-                _ => TAB_WIDTH_8,
+                8 => TAB_WIDTH_8,
+                _ => 0,
             };
             CheckMenuRadioItem(
                 crate::plugin_host::main_menu(self.window),
@@ -1080,10 +1434,66 @@ impl App {
     fn resize(&self) {
         resize_controls(self.window);
     }
+    fn rebuild_language_layout(&self) {
+        unsafe {
+            let menu = GetSubMenu(crate::plugin_host::main_menu(self.window), 5);
+            if menu.is_null() {
+                return;
+            }
+            while GetMenuItemCount(menu) > 0 {
+                DeleteMenu(menu, 0, MF_BYPOSITION);
+            }
+            AppendMenuW(
+                menu,
+                MF_STRING,
+                IDM_LANG_TEXT as usize,
+                w!("None (Normal Text)"),
+            );
+            AppendMenuW(menu, MF_SEPARATOR, 0, null());
+            let mut languages: Vec<_> = crate::languages::LANGUAGES
+                .iter()
+                .filter(|language| {
+                    language.command != IDM_LANG_TEXT
+                        && !self.excluded_languages.contains(&language.command)
+                })
+                .collect();
+            languages.sort_by_key(|language| language.name.to_lowercase());
+            let mut groups = std::collections::BTreeMap::new();
+            for language in languages {
+                let target = if self.compact_language_menu {
+                    let initial = language
+                        .name
+                        .chars()
+                        .next()
+                        .unwrap_or('#')
+                        .to_ascii_uppercase();
+                    *groups.entry(initial).or_insert_with(|| {
+                        let popup = CreatePopupMenu();
+                        AppendMenuW(
+                            menu,
+                            MF_POPUP,
+                            popup as usize,
+                            wide(&initial.to_string()).as_ptr(),
+                        );
+                        popup
+                    })
+                } else {
+                    menu
+                };
+                crate::languages::append_language(target, language);
+            }
+            crate::languages::append_user_menu(menu);
+            DrawMenuBar(self.window);
+        }
+    }
     fn apply_language(&mut self) {
         let language = self.language().command;
         if self.applied_language != Some(language) {
             crate::scintilla::language(self.edit, self.language());
+            crate::scintilla::control_characters(self.edit, self.show_controls.get(), language);
+            if language == IDM_LANG_SQL {
+                crate::scintilla::sql_backslash_escape(self.edit, self.sql_backslash_escape);
+            }
             self.applied_language = Some(language);
         }
     }
@@ -1114,10 +1524,169 @@ impl App {
                     .unwrap_or_else(|| crate::languages::detect(self.document().path()))
             })
     }
+    fn refresh_recent_menu(&self) {
+        unsafe {
+            let file = GetSubMenu(crate::plugin_host::main_menu(self.window), 0);
+            if file.is_null() {
+                return;
+            }
+            if self.recent_menu_snapshot.borrow().as_ref().is_some_and(
+                |(menu, length, submenu, paths)| {
+                    *menu == file as usize
+                        && *length == self.recent_label_length
+                        && *submenu == self.recent_in_submenu
+                        && paths
+                            .iter()
+                            .eq(self.workspace.recent_files().map(|entry| &entry.path))
+                },
+            ) {
+                return;
+            }
+            // Remove only our history items; preserve all other File commands.
+            for index in (0..GetMenuItemCount(file)).rev() {
+                let submenu = GetSubMenu(file, index);
+                let id = GetMenuItemID(file, index);
+                if (!submenu.is_null()
+                    && GetMenuState(submenu, IDM_CLEAN_RECENT_FILE_LIST, MF_BYCOMMAND) != u32::MAX)
+                    || (RECENT_FILE_FIRST..=RECENT_FILE_LAST).contains(&id)
+                    || matches!(id, IDM_OPEN_ALL_RECENT_FILE | IDM_CLEAN_RECENT_FILE_LIST)
+                {
+                    DeleteMenu(file, index as u32, MF_BYPOSITION);
+                }
+            }
+            let menu = CreatePopupMenu();
+            if menu.is_null() {
+                return;
+            }
+            let entries: Vec<_> = self.workspace.recent_files().collect();
+            for (index, entry) in entries.iter().enumerate() {
+                let raw = entry.path.to_string_lossy();
+                let path = if let Some(unc) = raw.strip_prefix(r"\\?\UNC\") {
+                    format!(r"\\{unc}")
+                } else {
+                    raw.strip_prefix(r"\\?\").unwrap_or(&raw).to_owned()
+                };
+                let path = match self.recent_label_length {
+                    0 => entry
+                        .path
+                        .file_name()
+                        .unwrap_or(entry.path.as_os_str())
+                        .to_string_lossy()
+                        .into_owned(),
+                    limit if limit > 0 => crate::tabs::compact_label(&path, limit as u32),
+                    _ => path,
+                };
+                let label = format!(
+                    "{}{} {}",
+                    if index < 9 { "&" } else { "" },
+                    index + 1,
+                    path.replace('&', "&&")
+                );
+                AppendMenuW(
+                    menu,
+                    MF_STRING,
+                    (RECENT_FILE_FIRST + index as u32) as usize,
+                    wide(&label).as_ptr(),
+                );
+            }
+            let flags = MF_STRING
+                | if entries.is_empty() {
+                    MF_GRAYED
+                } else {
+                    MF_ENABLED
+                };
+            AppendMenuW(
+                menu,
+                flags,
+                IDM_OPEN_ALL_RECENT_FILE as usize,
+                w!("Open All Recent Files"),
+            );
+            AppendMenuW(
+                menu,
+                flags,
+                IDM_CLEAN_RECENT_FILE_LIST as usize,
+                w!("Clear Recent Files List"),
+            );
+            let position = (0..GetMenuItemCount(file))
+                .find(|&index| GetMenuItemID(file, index) == IDM_FILE_RESTORELASTCLOSEDFILE)
+                .unwrap_or(GetMenuItemCount(file)) as u32;
+            if self.recent_in_submenu {
+                InsertMenuW(
+                    file,
+                    position,
+                    MF_BYPOSITION | MF_POPUP | MF_STRING,
+                    menu as usize,
+                    w!("Recent Files"),
+                );
+            } else {
+                for index in 0..GetMenuItemCount(menu) {
+                    let mut label = vec![0u16; 32768];
+                    let mut item = MENUITEMINFOW {
+                        cbSize: std::mem::size_of::<MENUITEMINFOW>() as u32,
+                        fMask: MIIM_ID | MIIM_STATE | MIIM_STRING | MIIM_FTYPE,
+                        dwTypeData: label.as_mut_ptr(),
+                        cch: label.len() as u32,
+                        ..Default::default()
+                    };
+                    if GetMenuItemInfoW(menu, index as u32, 1, &mut item) != 0 {
+                        InsertMenuItemW(file, position + index as u32, 1, &item);
+                    }
+                }
+                DestroyMenu(menu);
+            }
+            *self.recent_menu_snapshot.borrow_mut() = Some((
+                file as usize,
+                self.recent_label_length,
+                self.recent_in_submenu,
+                self.workspace
+                    .recent_files()
+                    .map(|entry| entry.path.clone())
+                    .collect(),
+            ));
+        }
+    }
     fn caption(&self) {
+        if !is_control_hidden(self.window, crate::editor_chrome::GUTTER as usize) {
+            crate::scintilla::send(
+                self.edit,
+                crate::scintilla::ids::SCI_SETMARGINWIDTHN,
+                0,
+                crate::scintilla::line_number_width(self.edit),
+            );
+        }
+        self.refresh_recent_menu();
+        crate::scintilla::bookmarks(self.edit, self.document().bookmarked_lines());
+        let matching_brace = crate::scintilla::highlight_braces(self.edit);
+        unsafe {
+            for command in [
+                IDM_SEARCH_GOTOMATCHINGBRACE,
+                IDM_SEARCH_SELECTMATCHINGBRACES,
+            ] {
+                EnableMenuItem(
+                    crate::plugin_host::main_menu(self.window),
+                    command,
+                    MF_BYCOMMAND
+                        | if matching_brace {
+                            MF_ENABLED
+                        } else {
+                            MF_GRAYED
+                        },
+                );
+            }
+        }
         // SAFETY: Menu belongs to the live window on this UI thread.
         unsafe {
             let menu = crate::plugin_host::main_menu(self.window);
+            for (command, checked) in [
+                (IDM_EDIT_RTL, self.rtl_buffers.contains(&self.active_id())),
+                (IDM_EDIT_LTR, !self.rtl_buffers.contains(&self.active_id())),
+            ] {
+                CheckMenuItem(
+                    menu,
+                    command,
+                    MF_BYCOMMAND | if checked { MF_CHECKED } else { MF_UNCHECKED },
+                );
+            }
             for language in crate::languages::LANGUAGES
                 .iter()
                 .chain(self.user_languages.iter())
@@ -1134,6 +1703,24 @@ impl App {
                 );
             }
             let path = self.document().path();
+            for command in [
+                IDM_VIEW_IN_FIREFOX,
+                IDM_VIEW_IN_CHROME,
+                IDM_VIEW_IN_EDGE,
+                IDM_VIEW_IN_IE,
+            ] {
+                EnableMenuItem(
+                    crate::plugin_host::main_menu(self.window),
+                    command,
+                    MF_BYCOMMAND
+                        | if path.is_some() {
+                            MF_ENABLED
+                        } else {
+                            MF_GRAYED
+                        },
+                );
+            }
+
             let mut availability = self.launch_availability.borrow_mut();
             if availability.as_ref().map(|entry| entry.0.as_path()) != path {
                 *availability = path.map(|p| {
@@ -1145,6 +1732,14 @@ impl App {
                 });
             }
             for (command, enabled) in [
+                (
+                    IDM_FILE_OPEN_CMD,
+                    path.and_then(Path::parent).is_some_and(Path::is_dir),
+                ),
+                (
+                    IDM_FILE_OPEN_POWERSHELL,
+                    path.and_then(Path::parent).is_some_and(Path::is_dir),
+                ),
                 (
                     IDM_FILE_OPEN_FOLDER,
                     availability.as_ref().is_some_and(|entry| entry.1),
@@ -1187,12 +1782,39 @@ impl App {
                 menu,
                 IDM_EDIT_BEGINENDSELECT,
                 MF_BYCOMMAND
-                    | if self.selection_gesture.is_started() {
+                    | if self.selection_gesture.is_started() && !self.column_selection_gesture {
                         MF_CHECKED
                     } else {
                         MF_UNCHECKED
                     },
             );
+            CheckMenuItem(
+                menu,
+                IDM_EDIT_BEGINENDSELECT_COLUMNMODE,
+                MF_BYCOMMAND
+                    | if self.selection_gesture.is_started() && self.column_selection_gesture {
+                        MF_CHECKED
+                    } else {
+                        MF_UNCHECKED
+                    },
+            );
+            for (command, column) in [
+                (IDM_EDIT_BEGINENDSELECT, false),
+                (IDM_EDIT_BEGINENDSELECT_COLUMNMODE, true),
+            ] {
+                EnableMenuItem(
+                    menu,
+                    command,
+                    MF_BYCOMMAND
+                        | if self.selection_gesture.is_started()
+                            && column != self.column_selection_gesture
+                        {
+                            MF_GRAYED
+                        } else {
+                            MF_ENABLED
+                        },
+                );
+            }
             EnableMenuItem(
                 menu,
                 IDM_EDIT_TOGGLESYSTEMREADONLY,
@@ -1271,7 +1893,16 @@ impl App {
         let doc = self.document();
         let name = doc
             .path()
-            .map(crate::find_files::display_path)
+            .map(|path| {
+                if self.short_title {
+                    path.file_name()
+                        .unwrap_or(path.as_os_str())
+                        .to_string_lossy()
+                        .into_owned()
+                } else {
+                    crate::find_files::display_path(path)
+                }
+            })
             .unwrap_or_else(|| {
                 self.workspace
                     .untitled_name(self.active_id())
@@ -1281,12 +1912,15 @@ impl App {
         let (line, column) = doc
             .line_column(doc.selection().caret, self.tab_width)
             .expect("valid document caret");
-        let selection_status = if doc.selection().range().is_empty() {
-            format!("Pos: {}", doc.selection().caret + 1)
-        } else {
-            let (characters, lines) = doc.selected_characters_and_lines();
-            format!("Sel: {characters} | {lines}")
-        };
+        let selection_status =
+            if let Some(status) = crate::scintilla::multiple_selection_status(self.edit) {
+                status
+            } else if doc.selection().range().is_empty() {
+                format!("Pos: {}", doc.selection().caret + 1)
+            } else {
+                let (characters, lines) = doc.selected_characters_and_lines();
+                format!("Sel: {characters} | {lines}")
+            };
         let mut status = format!(
             "Ln {}, Col {}   |   {}   |   {} bytes, {} lines   |   {:?}   |   {:?}{}",
             line + 1,
@@ -1351,10 +1985,18 @@ impl App {
                             .expect("untitled buffer name")
                             .to_owned()
                     });
+                let name = crate::tabs::compact_label(&name, self.compact_tab_length);
                 let mut text = wide(&format!(
-                    "{}{}    ×",
+                    "{}{}{}",
                     if doc.is_dirty() { "*" } else { "" },
-                    name
+                    name,
+                    if self.tab_close_buttons
+                        && (self.inactive_tab_buttons || self.workspace.active() == Some(id))
+                    {
+                        "    ×"
+                    } else {
+                        ""
+                    }
                 ));
                 let item = TCITEMW {
                     mask: TCIF_TEXT,
@@ -1377,22 +2019,52 @@ impl App {
             }
             SendMessageW(self.tabs, WM_SETREDRAW, 1, 0);
             InvalidateRect(self.tabs, null(), 0);
+            resize_controls(self.window);
         }
     }
     fn refresh(&mut self) {
+        if self.content_tab_names {
+            self.workspace.name_from_first_line(self.active_id());
+        }
+        self.default_languages
+            .retain(|id| self.workspace.get(*id).is_some());
         let active = self.active_id();
         let switching = self.displayed_buffer != Some(active);
         if switching {
             self.capture_scroll();
+        } else {
+            self.capture_hidden_sections();
         }
+        self.hidden_sections
+            .retain(|id, _| self.workspace.get(*id).is_some());
         self.first_visible_lines
             .retain(|id, _| self.workspace.get(*id).is_some());
+        self.horizontal_scroll
+            .retain(|id, _| self.workspace.get(*id).is_some());
+        self.native_selections
+            .retain(|id, _| self.workspace.get(*id).is_some());
+        self.fold_states
+            .retain(|id, _| self.workspace.get(*id).is_some());
+        self.rtl_buffers
+            .retain(|id| self.workspace.get(*id).is_some());
+        crate::scintilla::text_direction(self.edit, self.rtl_buffers.contains(&active));
         self.projection = Projection::new(self.document().text());
         let selection = self.document().selection();
         UPDATING.set(true);
         // SAFETY: Notifications are suppressed while copying model state to UI.
         unsafe {
             crate::scintilla::set_text(self.edit, &self.projection.text);
+            let eol = match self.document().line_ending() {
+                LineEnding::CrLf => crate::scintilla::ids::SC_EOL_CRLF,
+                LineEnding::Lf => crate::scintilla::ids::SC_EOL_LF,
+                LineEnding::Cr => crate::scintilla::ids::SC_EOL_CR,
+            };
+            crate::scintilla::send(
+                self.edit,
+                crate::scintilla::ids::SCI_SETEOLMODE,
+                eol as usize,
+                0,
+            );
             self.apply_language();
             SendMessageW(
                 self.edit,
@@ -1406,6 +2078,18 @@ impl App {
                 self.document().is_read_only() as usize,
                 0,
             );
+            if switching {
+                if let Some((snapshot, saved_selection, revision)) =
+                    self.native_selections.get(&active)
+                {
+                    // Explicit navigation (search/session/plugin) takes precedence.
+                    if *saved_selection == selection
+                        && std::sync::Arc::ptr_eq(revision, &self.document().text_revision_token())
+                    {
+                        crate::scintilla::restore_selection(self.edit, snapshot);
+                    }
+                }
+            }
             SendMessageW(self.edit, EM_SCROLLCARET, 0, 0);
             if switching {
                 crate::scintilla::restore_folds(
@@ -1415,7 +2099,13 @@ impl App {
             }
         }
         self.displayed_buffer = Some(active);
+        if let Some((sections, revision)) = self.hidden_sections.get(&active) {
+            if std::sync::Arc::ptr_eq(revision, &self.document().text_revision_token()) {
+                crate::scintilla::restore_hidden_sections(self.edit, sections);
+            }
+        }
         if switching {
+            self.restore_horizontal_scroll(active);
             if let Some(&line) = self.first_visible_lines.get(&active) {
                 self.scroll_to_line(line);
             }
@@ -1425,7 +2115,26 @@ impl App {
         self.caption();
     }
     fn capture_scroll(&mut self) {
+        self.capture_hidden_sections();
         if let Some(id) = self.displayed_buffer {
+            if let Some(document) = self.workspace.get(id) {
+                self.native_selections.insert(
+                    id,
+                    (
+                        crate::scintilla::selection_snapshot(self.edit),
+                        document.selection(),
+                        document.text_revision_token(),
+                    ),
+                );
+            }
+            use crate::scintilla::{ids::*, send};
+            self.horizontal_scroll.insert(
+                id,
+                (
+                    send(self.edit, SCI_GETXOFFSET, 0, 0).max(0) as usize,
+                    send(self.edit, SCI_GETSCROLLWIDTH, 0, 0).max(1) as usize,
+                ),
+            );
             self.fold_states
                 .insert(id, crate::scintilla::collapsed(self.edit));
         }
@@ -1436,11 +2145,51 @@ impl App {
             self.first_visible_lines.insert(id, line);
         }
     }
+    fn add_new_document(&mut self) {
+        let id = self.workspace.add(self.new_document());
+        self.languages.insert(id, self.new_document_language);
+        self.default_languages.insert(id);
+    }
+    fn new_document(&self) -> Document {
+        Document::new_with_format(
+            match self.new_document_eol {
+                1 => LineEnding::Lf,
+                2 => LineEnding::Cr,
+                _ => LineEnding::CrLf,
+            },
+            crate::preferences::NEW_ENCODINGS[self.new_document_encoding].1,
+        )
+    }
+    fn capture_hidden_sections(&mut self) {
+        if let Some(id) = self.displayed_buffer {
+            if let Some(document) = self.workspace.get(id) {
+                // Model-driven edits may already have changed line positions.
+                // Native edits update the projection before the next refresh.
+                if self.projection.text == document.text() {
+                    self.hidden_sections.insert(
+                        id,
+                        (
+                            crate::scintilla::hidden_sections(self.edit),
+                            document.text_revision_token(),
+                        ),
+                    );
+                } else {
+                    self.hidden_sections.remove(&id);
+                }
+            }
+        }
+    }
     fn scroll_to_line(&self, line: usize) {
         let line = line.min(self.document().line_starts().len().saturating_sub(1));
         use crate::scintilla::{ids::*, send};
         let visible = send(self.edit, SCI_VISIBLEFROMDOCLINE, line, 0).max(0);
         send(self.edit, SCI_SETFIRSTVISIBLELINE, visible as usize, 0);
+    }
+    fn restore_horizontal_scroll(&self, id: BufferId) {
+        use crate::scintilla::{ids::*, send};
+        let (offset, width) = self.horizontal_scroll.get(&id).copied().unwrap_or((0, 1));
+        send(self.edit, SCI_SETSCROLLWIDTH, width, 0);
+        send(self.edit, SCI_SETXOFFSET, offset, 0);
     }
     /// Use only when the document text and its native projection are unchanged.
     fn refresh_selection(&self) {
@@ -1519,6 +2268,7 @@ impl App {
                 let _ = self.workspace.close(old, false);
             }
         }
+        self.save_recent_files();
         self.refresh();
         Ok(())
     }
@@ -1603,11 +2353,18 @@ impl App {
     }
     fn save_to_checked(&mut self, path: &Path, overwrite_external: bool) -> io::Result<()> {
         let path = self.checked_save_path(path, overwrite_external)?;
+        let changed_path = self.document().path() != Some(path.as_path());
         self.document_mut().save_with(&path, atomic_write)?;
+        if changed_path && self.default_languages.remove(&self.active_id()) {
+            // A new-document default is not an explicit Language menu choice.
+            self.languages.remove(&self.active_id());
+            self.apply_language();
+        }
         self.launch_availability.borrow_mut().take();
         self.disk_states.remove(&self.active_id());
         self.attribute_check = None;
         self.workspace.forget_recent_path(&path);
+        self.save_recent_files();
         // A successful Save As can move a read-only document to a writable file.
         self.document_mut().set_file_read_only(false);
         // SAFETY: Edit HWND is owned by this App and receives a scalar flag.
@@ -1686,9 +2443,13 @@ impl App {
                 return false;
             }
             let _ = self.workspace.close(id, true);
+            self.save_recent_files();
         }
         if self.workspace.active().is_none() {
-            self.workspace.add(Document::new());
+            self.add_new_document();
+            if self.exit_last_tab {
+                enqueue(Event::Close);
+            }
         }
         self.workspace.activate(original);
         self.refresh();
@@ -1715,12 +2476,22 @@ impl App {
                 let result = (|| {
                     self.open_as(Path::new(filename), file.explicit_encoding()?)?;
                     file.restore_document_state(self.document_mut())?;
+                    if file
+                        .attributes
+                        .get("RTL")
+                        .is_some_and(|value| value == "yes")
+                    {
+                        self.rtl_buffers.insert(self.active_id());
+                    } else {
+                        self.rtl_buffers.remove(&self.active_id());
+                    }
                     if let Some(name) = file.attributes.get("lang") {
                         if let Some(language) = crate::languages::LANGUAGES
                             .iter()
                             .chain(self.user_languages.iter())
                             .find(|l| &l.name == name)
                         {
+                            self.default_languages.remove(&self.active_id());
                             self.languages.insert(self.active_id(), language.command);
                         }
                     }
@@ -1735,6 +2506,19 @@ impl App {
                             .unwrap_or(0);
                         let state = (self.active_id(), first_line);
                         self.refresh();
+                        crate::scintilla::restore_folds(self.edit, &file.folds);
+                        let position = |name: &str, default| {
+                            file.attributes
+                                .get(name)
+                                .and_then(|s| s.parse::<isize>().ok())
+                                .filter(|&n| n >= 0)
+                                .map_or(default, |n| n as usize)
+                        };
+                        self.horizontal_scroll.insert(
+                            self.active_id(),
+                            (position("xOffset", 0), position("scrollWidth", 1).max(1)),
+                        );
+                        self.restore_horizontal_scroll(self.active_id());
                         self.scroll_to_line(first_line);
                         self.capture_scroll();
                         loaded.push(state);
@@ -1760,6 +2544,11 @@ impl App {
         if let Some((id, first_line)) = selected {
             self.workspace.activate(id);
             self.refresh();
+            crate::scintilla::restore_folds(
+                self.edit,
+                self.fold_states.get(&id).map_or(&[], Vec::as_slice),
+            );
+            self.restore_horizontal_scroll(id);
             self.scroll_to_line(first_line);
         } else {
             self.refresh();
@@ -1809,6 +2598,20 @@ impl App {
                         crate::languages::detect(self.workspace.get(id).and_then(|d| d.path()))
                     });
                 file.attributes.insert("lang".into(), language.name.clone());
+                file.attributes.insert(
+                    "RTL".into(),
+                    if self.rtl_buffers.contains(&id) {
+                        "yes"
+                    } else {
+                        "no"
+                    }
+                    .into(),
+                );
+                file.folds = self.fold_states.get(&id).cloned().unwrap_or_default();
+                let (offset, width) = self.horizontal_scroll.get(&id).copied().unwrap_or((0, 1));
+                file.attributes.insert("xOffset".into(), offset.to_string());
+                file.attributes
+                    .insert("scrollWidth".into(), width.to_string());
             }
             if let Some(line) = id.and_then(|id| self.first_visible_lines.get(&id)) {
                 file.attributes
@@ -2287,19 +3090,323 @@ impl App {
     }
 
     fn current_preferences(&self) -> crate::preferences::Preferences {
+        use crate::scintilla::{ids::*, send};
         crate::preferences::Preferences {
+            initial_page: 0,
+            show_whitespace: send(self.edit, SCI_GETVIEWWS, 0, 0) != 0,
+            show_non_printing: self.show_non_printing.get(),
+            show_controls: self.show_controls.get(),
+            copy_cut_line: self.copy_cut_line,
+            double_click_close: self.double_click_close,
+            exit_last_tab: self.exit_last_tab,
+            lock_tab_drag: self.lock_tab_drag,
+            multiline_tabs: self.multiline_tabs,
+            content_tab_names: self.content_tab_names,
+            scroll_beyond_last_line: send(self.edit, SCI_GETENDATLASTLINE, 0, 0) == 0,
+            compact_tab_length: self.compact_tab_length,
+            recent_file_limit: self.workspace.recent_limit(),
+            recent_label_length: self.recent_label_length,
+            caret_width: self.caret_width,
+            current_line_mode: self.current_line_mode,
+            current_line_frame: self.current_line_frame,
+            fold_symbols: self.fold_symbol_style,
+            edge_columns: self.edge_columns.clone(),
+            edge_background: self.edge_background,
+            short_title: self.short_title,
+            save_all_confirm: self.save_all_confirm,
+            multi_edit: crate::scintilla::send(
+                self.edit,
+                crate::scintilla::ids::SCI_GETMULTIPLESELECTION,
+                0,
+                0,
+            ) != 0,
+            virtual_space: crate::scintilla::send(
+                self.edit,
+                crate::scintilla::ids::SCI_GETVIRTUALSPACEOPTIONS,
+                0,
+                0,
+            ) & 2
+                != 0,
+            column_to_multi: unsafe { !GetPropW(self.edit, w!("ColumnToMulti")).is_null() },
+            backspace_unindent: send(self.edit, SCI_GETBACKSPACEUNINDENTS, 0, 0) != 0,
+            toggle_fold_commands: unsafe {
+                !GetPropW(self.edit, w!("ToggleFoldCommands")).is_null()
+            },
+            wrap_indent: send(self.edit, SCI_GETWRAPINDENTMODE, 0, 0).clamp(0, 2) as usize,
+            smooth_font: send(self.edit, SCI_GETFONTQUALITY, 0, 0) == 3,
+            bookmark_margin: send(self.edit, SCI_GETMARGINWIDTHN, 1, 0) != 0,
+            distraction_divisor: unsafe {
+                (GetPropW(self.window, w!("DistractionDivisor")) as usize).clamp(3, 9)
+            },
+            padding_left: self
+                .distraction_free
+                .map_or_else(|| send(self.edit, SCI_GETMARGINLEFT, 0, 0), |state| state.0)
+                .max(0) as usize,
+            padding_right: self
+                .distraction_free
+                .map_or_else(
+                    || send(self.edit, SCI_GETMARGINRIGHT, 0, 0),
+                    |state| state.1,
+                )
+                .max(0) as usize,
+            disable_text_drag: send(self.edit, SCI_GETDRAGDROPENABLED, 0, 0) == 0,
+            dynamic_line_numbers: unsafe {
+                GetPropW(self.edit, w!("ConstantLineNumberWidth")).is_null()
+            },
+            right_click_keeps_selection: unsafe {
+                !GetPropW(self.edit, w!("KeepSelectionOnRightClick")).is_null()
+            },
+            caret_blink: send(self.edit, SCI_GETCARETPERIOD, 0, 0).max(0) as usize,
+            tab_close_buttons: self.tab_close_buttons,
+            inactive_tab_buttons: self.inactive_tab_buttons,
+            search_engine: self.search_engine.clone(),
+            show_eol: send(self.edit, SCI_GETVIEWEOL, 0, 0) != 0,
+            indent_guides: send(self.edit, SCI_GETINDENTATIONGUIDES, 0, 0) != 0,
+            wrap_symbols: send(self.edit, SCI_GETWRAPVISUALFLAGS, 0, 0) != 0,
             tab_width: self.tab_width.get(),
             spaces: self.indentation_style == IndentationStyle::Spaces,
             auto_indent: self.basic_auto_indent,
+            advanced_indent: self.advanced_indent,
+            new_document_eol: self.new_document_eol,
+            new_document_encoding: self.new_document_encoding,
+            new_document_language: self.new_document_language,
+            find_files_prefer_disk: self.find_files_prefer_disk,
+            rendering_mode: self.rendering_mode,
+            date_first: self.date_first,
+            date_format: self.date_format.clone(),
+            check_history_files: self.check_history_files,
+            recent_in_submenu: self.recent_in_submenu,
+            selected_text_foreground: self.selected_text_foreground,
+            sql_backslash_escape: self.sql_backslash_escape,
+            compact_language_menu: self.compact_language_menu,
+            excluded_languages: self.excluded_languages.clone(),
+            disable_advanced_scrolling: unsafe {
+                !GetPropW(self.edit, w!("DisableAdvancedScrolling")).is_null()
+            },
             word_wrap: self.word_wrap,
             zoom: self.zoom,
-            toolbar: !is_control_hidden(self.window, crate::editor_chrome::TOOLBAR as usize),
+            toolbar: self.post_it.map_or_else(
+                || !is_control_hidden(self.window, crate::editor_chrome::TOOLBAR as usize),
+                |state| state.1,
+            ),
             line_numbers: !is_control_hidden(self.window, crate::editor_chrome::GUTTER as usize),
-            status_bar: !is_status_hidden(self.window),
-            tab_bar: !is_control_hidden(self.window, TAB_ID),
+            status_bar: self
+                .post_it
+                .map_or_else(|| !is_status_hidden(self.window), |state| state.3),
+            tab_bar: self
+                .post_it
+                .map_or_else(|| !is_control_hidden(self.window, TAB_ID), |state| state.2),
         }
     }
     fn apply_preferences(&mut self, value: &crate::preferences::Preferences) -> io::Result<()> {
+        self.apply_symbols(value);
+        self.copy_cut_line = value.copy_cut_line;
+        self.double_click_close = value.double_click_close;
+        self.exit_last_tab = value.exit_last_tab;
+        self.lock_tab_drag = value.lock_tab_drag;
+        self.multiline_tabs = value.multiline_tabs;
+        self.content_tab_names = value.content_tab_names;
+        self.caret_width = value.caret_width.min(5);
+        self.current_line_mode = value.current_line_mode.min(2);
+        self.current_line_frame = value.current_line_frame.clamp(1, 6);
+        self.fold_symbol_style = value.fold_symbols.min(4);
+        self.edge_columns = value
+            .edge_columns
+            .iter()
+            .copied()
+            .filter(|&column| column <= 8192)
+            .collect();
+        self.edge_columns.sort_unstable();
+        self.edge_columns.dedup();
+        self.edge_background = value.edge_background;
+        self.short_title = value.short_title;
+        self.save_all_confirm = value.save_all_confirm;
+        unsafe {
+            SetPropW(
+                self.window,
+                w!("DistractionDivisor"),
+                value.distraction_divisor.clamp(3, 9) as HANDLE,
+            );
+        }
+        if let Some((left, right, _)) = self.distraction_free.as_mut() {
+            *left = value.padding_left.min(9) as isize;
+            *right = value.padding_right.min(9) as isize;
+        }
+        crate::scintilla::send(
+            self.edit,
+            crate::scintilla::ids::SCI_SETMULTIPLESELECTION,
+            value.multi_edit as usize,
+            0,
+        );
+        crate::scintilla::send(
+            self.edit,
+            crate::scintilla::ids::SCI_SETVIRTUALSPACEOPTIONS,
+            if value.virtual_space { 7 } else { 1 },
+            0,
+        );
+        unsafe {
+            if value.multi_edit && value.column_to_multi {
+                SetPropW(self.edit, w!("ColumnToMulti"), 1usize as HANDLE);
+            } else {
+                RemovePropW(self.edit, w!("ColumnToMulti"));
+            }
+        }
+        unsafe {
+            if value.toggle_fold_commands {
+                SetPropW(self.edit, w!("ToggleFoldCommands"), 1usize as HANDLE);
+            } else {
+                RemovePropW(self.edit, w!("ToggleFoldCommands"));
+            }
+        }
+        {
+            use crate::scintilla::{ids::*, send};
+            send(self.edit, SCI_MULTIEDGECLEARALL, 0, 0);
+            for &column in &self.edge_columns {
+                send(self.edit, SCI_MULTIEDGEADDLINE, column, 0xc0c0c0);
+            }
+            send(self.edit, SCI_SETEDGECOLOUR, 0xc0c0c0, 0);
+            let mode = if self.edge_columns.is_empty() {
+                0
+            } else if self.edge_columns.len() == 1 && self.edge_background {
+                send(self.edit, SCI_SETEDGECOLUMN, self.edge_columns[0], 0);
+                2 // EDGE_BACKGROUND
+            } else {
+                3
+            }; // EDGE_MULTILINE
+            send(self.edit, SCI_SETEDGEMODE, mode, 0);
+        }
+
+        crate::scintilla::fold_symbols(self.edit, self.fold_symbol_style);
+        crate::scintilla::send(
+            self.edit,
+            crate::scintilla::ids::SCI_SETMARGINLEFT,
+            0,
+            value.padding_left.min(9) as isize,
+        );
+        crate::scintilla::send(
+            self.edit,
+            crate::scintilla::ids::SCI_SETMARGINRIGHT,
+            0,
+            value.padding_right.min(9) as isize,
+        );
+        crate::scintilla::update_symbol_margin(self.edit, value.bookmark_margin);
+        unsafe {
+            if value.dynamic_line_numbers {
+                RemovePropW(self.edit, w!("ConstantLineNumberWidth"));
+            } else {
+                SetPropW(self.edit, w!("ConstantLineNumberWidth"), 1usize as HANDLE);
+            }
+        }
+        crate::scintilla::send(
+            self.edit,
+            crate::scintilla::ids::SCI_SETDRAGDROPENABLED,
+            (!value.disable_text_drag) as usize,
+            0,
+        );
+        unsafe {
+            if value.right_click_keeps_selection {
+                SetPropW(self.edit, w!("KeepSelectionOnRightClick"), 1usize as HANDLE);
+            } else {
+                RemovePropW(self.edit, w!("KeepSelectionOnRightClick"));
+            }
+        }
+
+        crate::scintilla::send(
+            self.edit,
+            crate::scintilla::ids::SCI_SETFONTQUALITY,
+            if value.smooth_font { 3 } else { 0 },
+            0,
+        );
+        crate::scintilla::send(
+            self.edit,
+            crate::scintilla::ids::SCI_SETWRAPINDENTMODE,
+            value.wrap_indent.min(2),
+            0,
+        );
+        {
+            use crate::scintilla::{ids::*, send};
+            send(
+                self.edit,
+                SCI_SETCARETLINEVISIBLE,
+                (self.current_line_mode != 0) as usize,
+                0,
+            );
+            send(
+                self.edit,
+                SCI_SETCARETLINEFRAME,
+                if self.current_line_mode == 2 {
+                    self.current_line_frame
+                } else {
+                    0
+                },
+                0,
+            );
+        }
+        {
+            use crate::scintilla::{ids::*, send};
+            // Scintilla CARETSTYLE_LINE=1, BLOCK=2, BLOCK_AFTER=0x100.
+            let style = match self.caret_width {
+                4 => 2,
+                5 => 2 | 0x100,
+                _ => 1,
+            };
+            send(self.edit, SCI_SETCARETSTYLE, style, 0);
+            send(
+                self.edit,
+                SCI_SETCARETWIDTH,
+                if self.caret_width < 4 {
+                    self.caret_width
+                } else {
+                    1
+                },
+                0,
+            );
+            send(
+                self.edit,
+                SCI_SETCARETPERIOD,
+                value.caret_blink.min(2000),
+                0,
+            );
+        }
+
+        crate::scintilla::send(
+            self.edit,
+            crate::scintilla::ids::SCI_SETENDATLASTLINE,
+            (!value.scroll_beyond_last_line) as usize,
+            0,
+        );
+        self.compact_tab_length = value.compact_tab_length.min(257);
+        self.workspace.set_recent_limit(value.recent_file_limit);
+        self.recent_label_length = value.recent_label_length.clamp(-1, 259);
+        self.tab_close_buttons = value.tab_close_buttons;
+        self.inactive_tab_buttons = value.inactive_tab_buttons;
+        crate::tabs::close_buttons(
+            self.tabs,
+            value.tab_close_buttons,
+            value.inactive_tab_buttons,
+        );
+        unsafe {
+            let style = GetWindowLongPtrW(self.tabs, GWL_STYLE) as u32;
+            let style = if value.multiline_tabs {
+                style | TCS_MULTILINE
+            } else {
+                style & !TCS_MULTILINE
+            };
+            SetWindowLongPtrW(self.tabs, GWL_STYLE, style as isize);
+            SetWindowPos(
+                self.tabs,
+                null_mut(),
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED,
+            );
+        }
+        unsafe {
+            crate::tabs::lock_drag(GetDlgItem(self.window, TAB_ID as i32), value.lock_tab_drag);
+        }
+        self.search_engine = value.search_engine.clone();
         self.set_tab_width(value.tab_width.clamp(1, 32))?;
         self.indentation_style = if value.spaces {
             IndentationStyle::Spaces
@@ -2307,6 +3414,64 @@ impl App {
             IndentationStyle::Tabs
         };
         self.basic_auto_indent = value.auto_indent;
+        self.advanced_indent = value.advanced_indent;
+        self.find_files_prefer_disk = value.find_files_prefer_disk;
+        self.rendering_mode = value.rendering_mode.min(4);
+        self.date_first = value.date_first;
+        self.date_format = value.date_format.clone();
+        unsafe {
+            CheckMenuItem(
+                crate::plugin_host::main_menu(self.window),
+                DATE_FIRST,
+                MF_BYCOMMAND
+                    | if self.date_first {
+                        MF_CHECKED
+                    } else {
+                        MF_UNCHECKED
+                    },
+            );
+        }
+        self.check_history_files = value.check_history_files;
+        self.recent_in_submenu = value.recent_in_submenu;
+        self.selected_text_foreground = value.selected_text_foreground;
+        self.sql_backslash_escape = value.sql_backslash_escape;
+        if self.compact_language_menu != value.compact_language_menu
+            || self.excluded_languages != value.excluded_languages
+        {
+            self.excluded_languages = value.excluded_languages.clone();
+            self.compact_language_menu = value.compact_language_menu;
+            self.rebuild_language_layout();
+        }
+        if self.language().command == IDM_LANG_SQL {
+            crate::scintilla::sql_backslash_escape(self.edit, self.sql_backslash_escape);
+        }
+        unsafe {
+            if value.disable_advanced_scrolling {
+                SetPropW(self.edit, w!("DisableAdvancedScrolling"), 1usize as HANDLE);
+            } else {
+                RemovePropW(self.edit, w!("DisableAdvancedScrolling"));
+            }
+        }
+        crate::scintilla::selection_foreground(self.edit, value.selected_text_foreground);
+        self.new_document_eol = value.new_document_eol.min(2);
+        self.new_document_language = crate::languages::by_command(value.new_document_language)
+            .map_or(IDM_LANG_TEXT, |language| language.command);
+        self.new_document_encoding = value
+            .new_document_encoding
+            .min(crate::preferences::NEW_ENCODINGS.len() - 1);
+        crate::scintilla::send(
+            self.edit,
+            crate::scintilla::ids::SCI_SETBACKSPACEUNINDENTS,
+            value.backspace_unindent as usize,
+            0,
+        );
+        // Special views temporarily hide chrome; preferences describe the normal view.
+        // Retain edits made while hidden for restoration when leaving the mode.
+        if let Some((_, toolbar, tabs, status, _, _)) = self.post_it.as_mut() {
+            *toolbar = value.toolbar;
+            *tabs = value.tab_bar;
+            *status = value.status_bar;
+        }
         self.set_zoom(value.zoom)?;
         if value.word_wrap != self.word_wrap {
             self.toggle_word_wrap()?;
@@ -2323,6 +3488,7 @@ impl App {
                 (STATUS_ID as i32, SHOW_STATUS_BAR, value.status_bar),
                 (TAB_ID as i32, SHOW_TAB_BAR, value.tab_bar),
             ] {
+                let show = show && (self.post_it.is_none() || id == crate::editor_chrome::GUTTER);
                 ShowWindow(
                     GetDlgItem(self.window, id),
                     if show { SW_SHOWNA } else { SW_HIDE },
@@ -2344,7 +3510,10 @@ impl App {
                 );
             }
         }
+        self.refresh_recent_menu();
+        self.refresh_tabs();
         self.resize();
+        self.caption();
         Ok(())
     }
     fn toggle_word_wrap(&mut self) -> io::Result<()> {
@@ -2369,6 +3538,82 @@ impl App {
         }
         Ok(())
     }
+    fn apply_symbols(&self, value: &crate::preferences::Preferences) {
+        use crate::scintilla::{ids::*, send};
+        self.show_non_printing.set(value.show_non_printing);
+        self.show_controls.set(value.show_controls);
+        let all = value.show_whitespace
+            && value.show_eol
+            && value.show_non_printing
+            && value.show_controls;
+        unsafe {
+            CheckMenuItem(
+                crate::plugin_host::main_menu(self.window),
+                IDM_VIEW_ALL_CHARACTERS,
+                MF_BYCOMMAND | if all { MF_CHECKED } else { MF_UNCHECKED },
+            );
+        }
+        crate::scintilla::control_characters(
+            self.edit,
+            value.show_controls,
+            self.language().command,
+        );
+        unsafe {
+            CheckMenuItem(
+                crate::plugin_host::main_menu(self.window),
+                IDM_VIEW_NPC_CCUNIEOL,
+                MF_BYCOMMAND
+                    | if value.show_controls {
+                        MF_CHECKED
+                    } else {
+                        MF_UNCHECKED
+                    },
+            );
+        }
+        crate::scintilla::non_printing(self.edit, value.show_non_printing);
+        unsafe {
+            CheckMenuItem(
+                crate::plugin_host::main_menu(self.window),
+                IDM_VIEW_NPC,
+                MF_BYCOMMAND
+                    | if value.show_non_printing {
+                        MF_CHECKED
+                    } else {
+                        MF_UNCHECKED
+                    },
+            );
+        }
+        for (command, message, show, mode) in [
+            (
+                IDM_VIEW_TAB_SPACE,
+                SCI_SETVIEWWS,
+                value.show_whitespace,
+                SCWS_VISIBLEALWAYS,
+            ),
+            (IDM_VIEW_EOL, SCI_SETVIEWEOL, value.show_eol, 1),
+            (
+                IDM_VIEW_INDENT_GUIDE,
+                SCI_SETINDENTATIONGUIDES,
+                value.indent_guides,
+                SC_IV_LOOKBOTH,
+            ),
+            (
+                IDM_VIEW_WRAP_SYMBOL,
+                SCI_SETWRAPVISUALFLAGS,
+                value.wrap_symbols,
+                SC_WRAPVISUALFLAG_END,
+            ),
+        ] {
+            send(self.edit, message, if show { mode as usize } else { 0 }, 0);
+            unsafe {
+                CheckMenuItem(
+                    crate::plugin_host::main_menu(self.window),
+                    command,
+                    MF_BYCOMMAND | if show { MF_CHECKED } else { MF_UNCHECKED },
+                );
+            }
+        }
+    }
     fn hash_command(&mut self, command: u32) -> io::Result<()> {
         use sha2::Digest;
         let from_file = [
@@ -2385,12 +3630,42 @@ impl App {
             IDM_TOOL_SHA512_GENERATEINTOCLIPBOARD,
         ]
         .contains(&command);
-        let bytes = if from_file {
-            let Some(path) = file_dialog(self.window, false)? else {
+        if from_file {
+            let Some(paths) = file_dialog_paths(
+                self.window,
+                false,
+                Some("Generate hashes from files"),
+                false,
+                true,
+            )?
+            else {
                 return Ok(());
             };
-            std::fs::read(path)?
-        } else if to_clipboard {
+            let mut results = String::new();
+            for path in paths {
+                let result = std::fs::read(&path).map(|bytes| match command {
+                    IDM_TOOL_MD5_GENERATEFROMFILE => format!("{:x}", md5::Md5::digest(&bytes)),
+                    IDM_TOOL_SHA1_GENERATEFROMFILE => format!("{:x}", sha1::Sha1::digest(&bytes)),
+                    IDM_TOOL_SHA256_GENERATEFROMFILE => {
+                        format!("{:x}", sha2::Sha256::digest(&bytes))
+                    }
+                    _ => format!("{:x}", sha2::Sha512::digest(&bytes)),
+                });
+                match result {
+                    Ok(hash) => results.push_str(&format!("{hash}  {}\r\n", path.display())),
+                    Err(error) => {
+                        results.push_str(&format!("ERROR  {}: {error}\r\n", path.display()))
+                    }
+                }
+            }
+            return crate::input_dialog::results(
+                self.window,
+                "File Hash Results",
+                "Hash and file path (select text to copy). Failed files are listed individually:",
+                &results,
+            );
+        }
+        let bytes = if to_clipboard {
             let (start, end) = control_selection(self.edit);
             let range = self.sync_native_selection(start, end).range();
             self.document().text()[range].as_bytes().to_vec()
@@ -2437,6 +3712,7 @@ impl App {
         if crate::languages::by_command(command).is_some()
             || self.user_languages.iter().any(|l| l.command == command)
         {
+            self.default_languages.remove(&self.active_id());
             self.languages.insert(self.active_id(), command);
             self.apply_language();
             self.caption();
@@ -2445,10 +3721,164 @@ impl App {
         if self.document().is_read_only() && EDIT_COMMANDS.contains(&command) {
             return;
         }
+        {
+            use crate::scintilla::{ids::*, send};
+            let message = match command {
+                IDM_EDIT_SPLIT_LINES => SCI_LINESSPLIT,
+                IDM_EDIT_DELETE => SCI_CLEAR,
+                DELETE_WORD_LEFT => SCI_DELWORDLEFT,
+                DELETE_WORD_RIGHT => SCI_DELWORDRIGHT,
+                DELETE_LINE_LEFT => SCI_DELLINELEFT,
+                DELETE_LINE_RIGHT => SCI_DELLINERIGHT,
+                _ => 0,
+            };
+            let split = command == IDM_EDIT_SPLIT_LINES;
+            let selections = send(self.edit, SCI_GETSELECTIONS, 0, 0);
+            if split && selections != 1 {
+                return;
+            }
+            if message != 0
+                && (split || selections > 1 || send(self.edit, SCI_SELECTIONISRECTANGLE, 0, 0) != 0)
+            {
+                let before = self
+                    .macro_recording
+                    .then(|| self.document().text().to_owned());
+                let caret = self.document().selection().caret;
+                UPDATING.set(true);
+                let mut width = 0;
+                if split {
+                    let start = send(self.edit, SCI_GETSELECTIONSTART, 0, 0) as usize;
+                    let end = send(self.edit, SCI_GETSELECTIONEND, 0, 0) as usize;
+                    let first = send(self.edit, SCI_LINEFROMPOSITION, start, 0) as usize;
+                    let mut last = send(self.edit, SCI_LINEFROMPOSITION, end, 0) as usize;
+                    if last > first
+                        && send(self.edit, SCI_POSITIONFROMLINE, last, 0) as usize == end
+                    {
+                        last -= 1;
+                    }
+                    let anchor = send(self.edit, SCI_POSITIONFROMLINE, first, 0);
+                    let caret = send(self.edit, SCI_GETLINEENDPOSITION, last, 0);
+                    send(self.edit, SCI_SETSELECTION, caret as usize, anchor);
+                    send(self.edit, SCI_TARGETFROMSELECTION, 0, 0);
+                    if send(self.edit, SCI_GETEDGEMODE, 0, 0) != 0 {
+                        let column = self.edge_columns.last().copied().unwrap_or_else(|| {
+                            send(self.edit, SCI_GETEDGECOLUMN, 0, 0).max(0) as usize
+                        });
+                        let character_width = send(
+                            self.edit,
+                            SCI_TEXTWIDTH,
+                            STYLE_DEFAULT as usize,
+                            c"P".as_ptr() as isize,
+                        )
+                        .max(1) as usize;
+                        width = character_width.saturating_mul(column.saturating_add(1));
+                    }
+                }
+                send(self.edit, message, width, 0);
+                UPDATING.set(false);
+                let text = crate::scintilla::text(self.edit);
+                let id = self.active_id();
+                if let Err(error) = self
+                    .projection
+                    .apply_exact(self.workspace.get_mut(id).unwrap(), &text)
+                {
+                    self.report(error);
+                    self.refresh();
+                    return;
+                }
+                self.projection = Projection::new(self.document().text());
+                let (start, end) = control_selection(self.edit);
+                self.sync_native_selection(start, end);
+                if let Some(before) = before {
+                    if let Some(step) =
+                        crate::macros::difference(&before, self.document().text(), caret)
+                    {
+                        self.macro_steps.push(step);
+                    }
+                }
+                self.caption();
+                self.refresh_tabs();
+                return;
+            }
+        }
+        // Accelerators arrive before the editor's key handler. Preserve native
+        // multiple/rectangular ranges and virtual columns for navigation.
+        {
+            use crate::scintilla::{ids::*, send};
+            let native_navigation = send(self.edit, SCI_GETSELECTIONS, 0, 0) > 1
+                || send(self.edit, SCI_SELECTIONISRECTANGLE, 0, 0) != 0
+                || send(self.edit, SCI_GETVIRTUALSPACEOPTIONS, 0, 0) & 2 != 0;
+            let rtl = self.rtl_buffers.contains(&self.active_id());
+            let message = match command {
+                SMART_HOME => SCI_VCHOME,
+                SMART_HOME_EXTEND => SCI_VCHOMEEXTEND,
+                LINE_END => SCI_LINEEND,
+                LINE_END_EXTEND => SCI_LINEENDEXTEND,
+                DOCUMENT_START => SCI_DOCUMENTSTART,
+                DOCUMENT_START_EXTEND => SCI_DOCUMENTSTARTEXTEND,
+                DOCUMENT_END => SCI_DOCUMENTEND,
+                DOCUMENT_END_EXTEND => SCI_DOCUMENTENDEXTEND,
+                WORD_LEFT => {
+                    if rtl {
+                        SCI_WORDRIGHT
+                    } else {
+                        SCI_WORDLEFT
+                    }
+                }
+                WORD_RIGHT => {
+                    if rtl {
+                        SCI_WORDLEFT
+                    } else {
+                        SCI_WORDRIGHT
+                    }
+                }
+                WORD_LEFT_EXTEND => {
+                    if rtl {
+                        SCI_WORDRIGHTEXTEND
+                    } else {
+                        SCI_WORDLEFTEXTEND
+                    }
+                }
+                WORD_RIGHT_EXTEND => {
+                    if rtl {
+                        SCI_WORDLEFTEXTEND
+                    } else {
+                        SCI_WORDRIGHTEXTEND
+                    }
+                }
+                WORD_PART_LEFT => SCI_WORDPARTLEFT,
+                WORD_PART_RIGHT => SCI_WORDPARTRIGHT,
+                WORD_PART_LEFT_EXTEND => SCI_WORDPARTLEFTEXTEND,
+                WORD_PART_RIGHT_EXTEND => SCI_WORDPARTRIGHTEXTEND,
+                PARAGRAPH_UP => SCI_PARAUP,
+                PARAGRAPH_DOWN => SCI_PARADOWN,
+                PARAGRAPH_UP_EXTEND => SCI_PARAUPEXTEND,
+                PARAGRAPH_DOWN_EXTEND => SCI_PARADOWNEXTEND,
+                _ => 0,
+            };
+            if native_navigation && message != 0 {
+                let mode = send(self.edit, SCI_GETSELECTIONMODE, 0, 0) as u32;
+                if matches!(mode, SC_SEL_RECTANGLE | SC_SEL_THIN)
+                    && unsafe { !GetPropW(self.edit, w!("ColumnToMulti")).is_null() }
+                {
+                    // Upstream repeats the mode change to discard the extra
+                    // rectangular range while retaining its constituent carets.
+                    send(self.edit, SCI_SETSELECTIONMODE, SC_SEL_STREAM as usize, 0);
+                    send(self.edit, SCI_SETSELECTIONMODE, SC_SEL_STREAM as usize, 0);
+                }
+                send(self.edit, message, 0, 0);
+                let (start, end) = control_selection(self.edit);
+                self.sync_native_selection(start, end);
+                self.caption();
+                return;
+            }
+        }
         if self.macro_recording
             && EDIT_COMMANDS.contains(&command)
             && ![
                 IDM_EDIT_CUT,
+                IDM_EDIT_CUT_BINARY,
+                IDM_EDIT_PASTE_BINARY,
                 IDM_EDIT_PASTE,
                 IDM_EDIT_PASTE_AS_HTML,
                 IDM_EDIT_PASTE_AS_RTF,
@@ -2458,6 +3888,37 @@ impl App {
             self.macro_steps.push(crate::macros::Step::Command(command));
         }
         match command {
+            IDM_VIEW_TAB_SPACE
+            | IDM_VIEW_EOL
+            | IDM_VIEW_INDENT_GUIDE
+            | IDM_VIEW_WRAP_SYMBOL
+            | IDM_VIEW_NPC
+            | IDM_VIEW_NPC_CCUNIEOL
+            | IDM_VIEW_ALL_CHARACTERS => {
+                let mut value = self.current_preferences();
+                match command {
+                    IDM_VIEW_ALL_CHARACTERS => {
+                        let show = !(value.show_whitespace
+                            && value.show_eol
+                            && value.show_non_printing
+                            && value.show_controls);
+                        value.show_whitespace = show;
+                        value.show_eol = show;
+                        value.show_non_printing = show;
+                        value.show_controls = show;
+                    }
+                    IDM_VIEW_NPC => value.show_non_printing = !value.show_non_printing,
+                    IDM_VIEW_NPC_CCUNIEOL => value.show_controls = !value.show_controls,
+                    IDM_VIEW_TAB_SPACE => value.show_whitespace = !value.show_whitespace,
+                    IDM_VIEW_EOL => value.show_eol = !value.show_eol,
+                    IDM_VIEW_INDENT_GUIDE => value.indent_guides = !value.indent_guides,
+                    _ => value.wrap_symbols = !value.wrap_symbols,
+                }
+                self.apply_symbols(&value);
+                if let Err(error) = crate::preferences::save(&value) {
+                    self.report(error);
+                }
+            }
             FORMAT_DOCUMENT | FORMAT_SELECTION => {
                 let (start, end) = control_selection(self.edit);
                 let selection = self.sync_native_selection(start, end);
@@ -2583,12 +4044,13 @@ impl App {
                         language.command = old.command;
                         *old = language.clone();
                     } else {
-                        if next.len() >= 500 {
+                        if next.len() >= crate::languages::USER_LANGUAGE_LIMIT {
                             return Err(io::Error::other(
                                 "At most 500 user languages can be defined.",
                             ));
                         }
-                        language.command = 62000 + next.len() as u32;
+                        language.command =
+                            crate::languages::USER_LANGUAGE_FIRST + next.len() as u32;
                         next.push(language.clone());
                     }
                     crate::languages::save_user(&next)?;
@@ -2602,6 +4064,7 @@ impl App {
                         }
                     }
                     self.user_languages = next;
+                    self.default_languages.remove(&self.active_id());
                     self.languages.insert(self.active_id(), language.command);
                     self.applied_language = None;
                     self.apply_language();
@@ -2635,6 +4098,183 @@ impl App {
                     self.report(error);
                 }
             }
+            IDM_VIEW_DISTRACTIONFREE => {
+                use crate::scintilla::{ids::*, send};
+                if let Some((left, right, results)) = self.distraction_free.take() {
+                    unsafe {
+                        RemovePropW(self.window, w!("DistractionFree"));
+                    }
+                    self.command(IDM_VIEW_FULLSCREENTOGGLE);
+                    self.command(IDM_VIEW_POSTIT);
+                    send(self.edit, SCI_SETMARGINLEFT, 0, left);
+                    send(self.edit, SCI_SETMARGINRIGHT, 0, right);
+                    if let Some(search) = &self.find_files {
+                        search.show_results(results);
+                    }
+                } else {
+                    // Upstream only enters this combined mode from normal view.
+                    if self.fullscreen.is_some() || self.post_it.is_some() {
+                        return;
+                    }
+                    let left = send(self.edit, SCI_GETMARGINLEFT, 0, 0);
+                    let right = send(self.edit, SCI_GETMARGINRIGHT, 0, 0);
+                    let results =
+                        !is_control_hidden(self.window, crate::find_files::RESULTS as usize);
+                    self.command(IDM_VIEW_FULLSCREENTOGGLE);
+                    if self.fullscreen.is_none() {
+                        return;
+                    }
+                    self.command(IDM_VIEW_POSTIT);
+                    if self.post_it.is_none() {
+                        self.command(IDM_VIEW_FULLSCREENTOGGLE);
+                        return;
+                    }
+                    if let Some(search) = &self.find_files {
+                        search.show_results(false);
+                    }
+                    self.distraction_free = Some((left, right, results));
+                    unsafe {
+                        SetPropW(self.window, w!("DistractionFree"), 1usize as HANDLE);
+                    }
+                }
+                unsafe {
+                    CheckMenuItem(
+                        crate::plugin_host::main_menu(self.window),
+                        IDM_VIEW_DISTRACTIONFREE,
+                        MF_BYCOMMAND
+                            | if self.distraction_free.is_some() {
+                                MF_CHECKED
+                            } else {
+                                MF_UNCHECKED
+                            },
+                    );
+                }
+                self.resize();
+            }
+            IDM_VIEW_POSTIT => unsafe {
+                if self.distraction_free.is_some() {
+                    self.command(IDM_VIEW_DISTRACTIONFREE);
+                    return;
+                }
+                let mut restore = GetDlgItem(self.window, POST_IT_RESTORE);
+                if restore.is_null() {
+                    restore = CreateWindowExW(
+                        0,
+                        w!("BUTTON"),
+                        w!("Restore (F12)"),
+                        WS_CHILD | WS_TABSTOP | BS_PUSHBUTTON as u32,
+                        0,
+                        0,
+                        110,
+                        26,
+                        self.window,
+                        POST_IT_RESTORE as HMENU,
+                        GetModuleHandleW(null()),
+                        null(),
+                    );
+                    if restore.is_null() {
+                        self.report(io::Error::last_os_error());
+                        return;
+                    }
+                    SendMessageW(
+                        restore,
+                        WM_SETFONT,
+                        GetStockObject(DEFAULT_GUI_FONT) as usize,
+                        1,
+                    );
+                }
+                let restoring = self.post_it.take();
+                let entering = restoring.is_none();
+                let (style, toolbar, tabs, status, menu, top) = restoring.unwrap_or_else(|| {
+                    (
+                        self.fullscreen
+                            .as_ref()
+                            .map_or(GetWindowLongPtrW(self.window, GWL_STYLE), |(style, _)| {
+                                *style
+                            }),
+                        !is_control_hidden(self.window, crate::editor_chrome::TOOLBAR as usize),
+                        !is_control_hidden(self.window, TAB_ID),
+                        !is_status_hidden(self.window),
+                        !GetMenu(self.window).is_null(),
+                        GetWindowLongPtrW(self.window, GWL_EXSTYLE) as u32 & WS_EX_TOPMOST != 0,
+                    )
+                });
+                if entering {
+                    self.post_it = Some((style, toolbar, tabs, status, menu, top));
+                }
+                ShowWindow(restore, if entering { SW_SHOWNA } else { SW_HIDE });
+                if self.fullscreen.is_none() {
+                    SetWindowLongPtrW(
+                        self.window,
+                        GWL_STYLE,
+                        if entering {
+                            style & !(WS_OVERLAPPEDWINDOW as isize)
+                        } else {
+                            style
+                        },
+                    );
+                } else if !entering {
+                    if let Some((saved, _)) = self.fullscreen.as_mut() {
+                        *saved = style;
+                    }
+                }
+                ShowWindow(
+                    GetDlgItem(self.window, crate::editor_chrome::TOOLBAR),
+                    if !entering && toolbar {
+                        SW_SHOWNA
+                    } else {
+                        SW_HIDE
+                    },
+                );
+                SendMessageW(
+                    self.window,
+                    npp_compat::messages::NPPM_HIDETABBAR,
+                    0,
+                    (entering || !tabs) as isize,
+                );
+                SendMessageW(
+                    self.window,
+                    npp_compat::messages::NPPM_HIDESTATUSBAR,
+                    0,
+                    (entering || !status) as isize,
+                );
+                SendMessageW(
+                    self.window,
+                    npp_compat::messages::NPPM_HIDEMENU,
+                    0,
+                    (entering || !menu) as isize,
+                );
+                SetWindowPos(
+                    self.window,
+                    if entering || top {
+                        HWND_TOPMOST
+                    } else {
+                        HWND_NOTOPMOST
+                    },
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_FRAMECHANGED,
+                );
+                CheckMenuItem(
+                    crate::plugin_host::main_menu(self.window),
+                    IDM_VIEW_POSTIT,
+                    MF_BYCOMMAND | if entering { MF_CHECKED } else { MF_UNCHECKED },
+                );
+                CheckMenuItem(
+                    crate::plugin_host::main_menu(self.window),
+                    IDM_VIEW_ALWAYSONTOP,
+                    MF_BYCOMMAND
+                        | if entering || top {
+                            MF_CHECKED
+                        } else {
+                            MF_UNCHECKED
+                        },
+                );
+                self.resize();
+                SetFocus(self.edit);
+            },
             IDM_VIEW_ALWAYSONTOP => unsafe {
                 let top = GetWindowLongPtrW(self.window, GWL_EXSTYLE) as u32 & WS_EX_TOPMOST == 0;
                 SetWindowPos(
@@ -2653,7 +4293,16 @@ impl App {
                 );
             },
             IDM_VIEW_FULLSCREENTOGGLE => unsafe {
+                if self.distraction_free.is_some() {
+                    self.command(IDM_VIEW_DISTRACTIONFREE);
+                    return;
+                }
                 if let Some((style, bounds)) = self.fullscreen.take() {
+                    let style = if self.post_it.is_some() {
+                        style & !(WS_OVERLAPPEDWINDOW as isize)
+                    } else {
+                        style
+                    };
                     SetWindowLongPtrW(self.window, GWL_STYLE, style);
                     SetWindowPos(
                         self.window,
@@ -3003,13 +4652,59 @@ impl App {
                     }
                 }
             }
-            IDM_SETTING_PREFERENCE => {
-                let result = (|| -> io::Result<()> {
-                    if let Some(value) =
-                        crate::preferences::show(self.window, self.current_preferences())?
+            IDM_EDIT_SEARCHONINTERNET => {
+                let (start, end) = control_selection(self.edit);
+                let selection = self.sync_native_selection(start, end);
+                let mut range = selection.range();
+                if range.is_empty() {
+                    use crate::scintilla::{ids::*, send};
+                    let position = send(self.edit, SCI_GETCURRENTPOS, 0, 0) as usize;
+                    range = send(self.edit, SCI_WORDSTARTPOSITION, position, 1) as usize
+                        ..send(self.edit, SCI_WORDENDPOSITION, position, 1) as usize;
+                }
+                if let Some(text) = self.document().text().get(range) {
+                    let mut encoded = String::new();
+                    for byte in text.bytes() {
+                        if byte.is_ascii_alphanumeric() || b"-._~".contains(&byte) {
+                            encoded.push(byte as char);
+                        } else {
+                            use std::fmt::Write;
+                            let _ = write!(encoded, "%{byte:02X}");
+                        }
+                    }
+                    let template = if self.search_engine.starts_with("https://")
+                        || self.search_engine.starts_with("http://")
                     {
+                        self.search_engine.clone()
+                    } else {
+                        crate::preferences::Preferences::default().search_engine
+                    };
+                    let url = template.replace("$(CURRENT_WORD)", &encoded);
+                    unsafe {
+                        let result = windows_sys::Win32::UI::Shell::ShellExecuteW(
+                            self.window,
+                            w!("open"),
+                            wide(&url).as_ptr(),
+                            null(),
+                            null(),
+                            SW_SHOWNORMAL,
+                        );
+                        if result as usize <= 32 {
+                            self.report("Could not open the search URL");
+                        }
+                    }
+                }
+            }
+            IDM_SETTING_PREFERENCE | IDM_EDIT_CHANGESEARCHENGINE => {
+                let result = (|| -> io::Result<()> {
+                    let mut current = self.current_preferences();
+                    if command == IDM_EDIT_CHANGESEARCHENGINE {
+                        current.initial_page = 4;
+                    }
+                    if let Some(value) = crate::preferences::show(self.window, current)? {
                         self.apply_preferences(&value)?;
                         crate::preferences::save(&value)?;
+                        self.save_recent_files();
                     }
                     Ok(())
                 })();
@@ -3036,6 +4731,9 @@ impl App {
                     );
                 }
                 self.resize();
+            }
+            IDM_VIEW_HIDELINES => {
+                crate::scintilla::hide_selected_lines(self.edit);
             }
             IDM_VIEW_WRAP => {
                 if let Err(error) = self.toggle_word_wrap() {
@@ -3386,7 +5084,7 @@ impl App {
                 let (start, end) = control_selection(self.edit);
                 let selection = self.sync_native_selection(start, end);
                 let (width, style) = (self.tab_width, self.indentation_style);
-                if self.basic_auto_indent {
+                if self.basic_auto_indent && self.advanced_indent {
                     let (replacement, caret) = crate::formatting::newline(
                         self.edit,
                         self.document().text(),
@@ -3405,7 +5103,10 @@ impl App {
                             caret,
                         });
                     }
-                } else if let Err(error) = self.document_mut().insert_newline(false, width, style) {
+                } else if let Err(error) = {
+                    let basic = self.basic_auto_indent;
+                    self.document_mut().insert_newline(basic, width, style)
+                } {
                     self.report(error);
                 }
                 self.refresh();
@@ -3596,15 +5297,27 @@ impl App {
                 }
             }
             IDM_SEARCH_GOTOMATCHINGBRACE | IDM_SEARCH_SELECTMATCHINGBRACES => {
-                let (start, end) = control_selection(self.edit);
-                self.sync_native_selection(start, end);
-                if let Err(e) = self
-                    .document_mut()
-                    .go_to_matching_brace(command == IDM_SEARCH_SELECTMATCHINGBRACES)
-                {
-                    self.report(e);
+                use crate::scintilla::{
+                    ids::{SCI_CHOOSECARETX, SCI_GOTOPOS, SCI_SETSEL},
+                    matching_braces, send,
+                };
+                let (brace, opposite) = matching_braces(self.edit);
+                if opposite >= 0 {
+                    if command == IDM_SEARCH_GOTOMATCHINGBRACE {
+                        send(self.edit, SCI_GOTOPOS, opposite as usize, 0);
+                    } else {
+                        send(
+                            self.edit,
+                            SCI_SETSEL,
+                            brace.min(opposite) as usize,
+                            brace.max(opposite) + 1,
+                        );
+                    }
+                    send(self.edit, SCI_CHOOSECARETX, 0, 0);
+                    let (start, end) = control_selection(self.edit);
+                    self.sync_native_selection(start, end);
+                    self.caption();
                 }
-                self.refresh_selection();
             }
             IDM_SEARCH_GOTOLINE => {
                 let (start, end) = control_selection(self.edit);
@@ -3687,7 +5400,8 @@ impl App {
             WORD_LEFT | WORD_RIGHT | WORD_LEFT_EXTEND | WORD_RIGHT_EXTEND => {
                 let (start, end) = control_selection(self.edit);
                 self.sync_native_selection(start, end);
-                let rightwards = matches!(command, WORD_RIGHT | WORD_RIGHT_EXTEND);
+                let rightwards = matches!(command, WORD_RIGHT | WORD_RIGHT_EXTEND)
+                    ^ self.rtl_buffers.contains(&self.active_id());
                 let extend = matches!(command, WORD_LEFT_EXTEND | WORD_RIGHT_EXTEND);
                 let _ = self.document_mut().move_word(rightwards, extend);
                 self.refresh_selection();
@@ -3703,6 +5417,19 @@ impl App {
                     );
                 }
             }
+            IDM_VIEW_IN_FIREFOX | IDM_VIEW_IN_CHROME | IDM_VIEW_IN_EDGE | IDM_VIEW_IN_IE => {
+                if let Some(path) = self.document().path() {
+                    let executable = match command {
+                        IDM_VIEW_IN_FIREFOX => "firefox.exe",
+                        IDM_VIEW_IN_CHROME => "chrome.exe",
+                        IDM_VIEW_IN_EDGE => "msedge.exe",
+                        _ => "IEXPLORE.EXE",
+                    };
+                    if let Err(error) = crate::file_launch::browser(self.window, path, executable) {
+                        self.report(error);
+                    }
+                }
+            }
             IDM_FILE_OPEN_FOLDER | IDM_FILE_OPEN_DEFAULT_VIEWER => {
                 use crate::file_launch::{Action, launch};
                 let action = if command == IDM_FILE_OPEN_FOLDER {
@@ -3714,6 +5441,28 @@ impl App {
                     self.launch_file_with(action, |path, action| launch(self.window, path, action))
                 {
                     self.report(error);
+                }
+            }
+            IDM_FILE_OPEN_CMD => {
+                if let Some(directory) = self.document().path().and_then(Path::parent) {
+                    let executable = std::env::var_os("COMSPEC")
+                        .map(PathBuf::from)
+                        .unwrap_or_else(|| PathBuf::from("cmd.exe"));
+                    if let Err(error) =
+                        crate::file_launch::terminal(self.window, directory, &executable)
+                    {
+                        self.report(error);
+                    }
+                }
+            }
+            IDM_FILE_OPEN_POWERSHELL => {
+                if let Some(directory) = self.document().path().and_then(Path::parent) {
+                    let result = crate::file_launch::powershell_path().and_then(|executable| {
+                        crate::file_launch::terminal(self.window, directory, &executable)
+                    });
+                    if let Err(error) = result {
+                        self.report(error);
+                    }
                 }
             }
             IDM_VIEW_SUMMARY => {
@@ -3734,16 +5483,57 @@ impl App {
                     Err(error) => self.report(error),
                 }
             }
-            IDM_EDIT_BEGINENDSELECT => {
+            IDM_EDIT_BEGINENDSELECT | IDM_EDIT_BEGINENDSELECT_COLUMNMODE => {
+                let column = command == IDM_EDIT_BEGINENDSELECT_COLUMNMODE;
+                let ending = self.selection_gesture.is_started();
+                if ending && column != self.column_selection_gesture {
+                    return;
+                }
+                if !ending {
+                    self.column_selection_gesture = column;
+                }
                 let (start, end) = control_selection(self.edit);
                 self.sync_native_selection(start, end);
+                // The EDIT compatibility selection is sorted; use the native caret
+                // so backwards selections mark the same endpoint as upstream.
+                let native_caret = crate::scintilla::send(
+                    self.edit,
+                    crate::scintilla::ids::SCI_GETCURRENTPOS,
+                    0,
+                    0,
+                ) as usize;
+                let caret = self
+                    .projection
+                    .byte_offset(self.projection.text[..native_caret].encode_utf16().count());
+                let mut selection = self.document().selection();
+                selection.caret = caret;
+                let _ = self.document_mut().select(selection);
                 let gesture = self.selection_gesture.clone();
-                let document = self.document_mut();
-                let result = gesture.toggle(document);
-                if let Err(error) = result {
+                if let Err(error) = gesture.toggle(self.document_mut()) {
                     self.report(error);
+                    return;
                 }
-                self.refresh_selection();
+                if column && ending {
+                    use crate::scintilla::{ids::*, send};
+                    let selection = self.document().selection();
+                    let anchor = Projection::new(&self.document().text()[..selection.anchor])
+                        .text
+                        .len();
+                    let caret = Projection::new(&self.document().text()[..selection.caret])
+                        .text
+                        .len();
+                    send(
+                        self.edit,
+                        SCI_CHANGESELECTIONMODE,
+                        SC_SEL_RECTANGLE as usize,
+                        0,
+                    );
+                    send(self.edit, SCI_SETRECTANGULARSELECTIONANCHOR, anchor, 0);
+                    send(self.edit, SCI_SETRECTANGULARSELECTIONCARET, caret, 0);
+                    self.caption();
+                } else {
+                    self.refresh_selection();
+                }
             }
             OPEN_1252 | OPEN_1251 | OPEN_SHIFT_JIS | OPEN_UTF16LE_NO_BOM | OPEN_UTF16BE_NO_BOM => {
                 let encoding = match command {
@@ -3781,6 +5571,36 @@ impl App {
                 self.caption();
                 self.refresh_tabs();
             }
+            RECENT_FILE_FIRST..=RECENT_FILE_LAST | IDM_OPEN_ALL_RECENT_FILE => {
+                let mut entries: Vec<_> = self.workspace.recent_files().cloned().collect();
+                if command == IDM_OPEN_ALL_RECENT_FILE {
+                    entries.reverse();
+                } else {
+                    entries = entries
+                        .into_iter()
+                        .nth((command - RECENT_FILE_FIRST) as usize)
+                        .into_iter()
+                        .collect();
+                }
+                let mut failures = Vec::new();
+                for entry in entries {
+                    let encoding = entry
+                        .encoding
+                        .requires_explicit_decode()
+                        .then_some(entry.encoding);
+                    if let Err(error) = self.open_as(&entry.path, encoding) {
+                        failures.push(format!("{}: {error}", entry.path.display()));
+                    }
+                }
+                if !failures.is_empty() {
+                    self.report(failures.join("\n"));
+                }
+            }
+            IDM_CLEAN_RECENT_FILE_LIST => {
+                self.workspace.restore_recent_files(std::iter::empty());
+                self.save_recent_files();
+                self.caption();
+            }
             IDM_FILE_RESTORELASTCLOSEDFILE => {
                 if let Some(recent) = self.workspace.latest_closed().cloned() {
                     let encoding = match recent.encoding {
@@ -3810,7 +5630,153 @@ impl App {
                 }
                 self.refresh();
             }
+            IDM_EDIT_MULTISELECTALL
+            | IDM_EDIT_MULTISELECTALLMATCHCASE
+            | IDM_EDIT_MULTISELECTALLWHOLEWORD
+            | IDM_EDIT_MULTISELECTALLMATCHCASEWHOLEWORD
+            | IDM_EDIT_MULTISELECTNEXT
+            | IDM_EDIT_MULTISELECTNEXTMATCHCASE
+            | IDM_EDIT_MULTISELECTNEXTWHOLEWORD
+            | IDM_EDIT_MULTISELECTNEXTMATCHCASEWHOLEWORD
+            | IDM_EDIT_MULTISELECTUNDO
+            | IDM_EDIT_MULTISELECTSSKIP => {
+                use crate::scintilla::{ids::*, send};
+                if send(self.edit, SCI_GETMULTIPLESELECTION, 0, 0) == 0 {
+                    return;
+                }
+                if command == IDM_EDIT_MULTISELECTUNDO {
+                    let count = send(self.edit, SCI_GETSELECTIONS, 0, 0);
+                    if count > 0 {
+                        send(self.edit, SCI_DROPSELECTIONN, (count - 1) as usize, 0);
+                    }
+                } else {
+                    if command != IDM_EDIT_MULTISELECTSSKIP {
+                        self.multi_select_flags = match command {
+                            IDM_EDIT_MULTISELECTALLMATCHCASE
+                            | IDM_EDIT_MULTISELECTNEXTMATCHCASE => SCFIND_MATCHCASE as usize,
+                            IDM_EDIT_MULTISELECTALLWHOLEWORD
+                            | IDM_EDIT_MULTISELECTNEXTWHOLEWORD => SCFIND_WHOLEWORD as usize,
+                            IDM_EDIT_MULTISELECTALLMATCHCASEWHOLEWORD
+                            | IDM_EDIT_MULTISELECTNEXTMATCHCASEWHOLEWORD => {
+                                (SCFIND_MATCHCASE | SCFIND_WHOLEWORD) as usize
+                            }
+                            _ => 0,
+                        };
+                    }
+                    let all = matches!(
+                        command,
+                        IDM_EDIT_MULTISELECTALL
+                            | IDM_EDIT_MULTISELECTALLMATCHCASE
+                            | IDM_EDIT_MULTISELECTALLWHOLEWORD
+                            | IDM_EDIT_MULTISELECTALLMATCHCASEWHOLEWORD
+                    );
+                    if all
+                        && send(self.edit, SCI_GETSELECTIONSTART, 0, 0)
+                            == send(self.edit, SCI_GETSELECTIONEND, 0, 0)
+                    {
+                        let caret = send(self.edit, SCI_GETCURRENTPOS, 0, 0) as usize;
+                        let start = send(self.edit, SCI_WORDSTARTPOSITION, caret, 1);
+                        let end = send(self.edit, SCI_WORDENDPOSITION, caret, 1);
+                        if start == end {
+                            return;
+                        }
+                        send(self.edit, SCI_SETSEL, start as usize, end);
+                    }
+                    send(self.edit, SCI_TARGETWHOLEDOCUMENT, 0, 0);
+                    send(self.edit, SCI_SETSEARCHFLAGS, self.multi_select_flags, 0);
+                    send(
+                        self.edit,
+                        if all {
+                            SCI_MULTIPLESELECTADDEACH
+                        } else {
+                            SCI_MULTIPLESELECTADDNEXT
+                        },
+                        0,
+                        0,
+                    );
+                    if command == IDM_EDIT_MULTISELECTSSKIP {
+                        let count = send(self.edit, SCI_GETSELECTIONS, 0, 0);
+                        if count > 1 {
+                            send(self.edit, SCI_DROPSELECTIONN, (count - 2) as usize, 0);
+                        }
+                    }
+                }
+                self.caption();
+            }
+            IDM_EDIT_COLUMNMODETIP => {
+                // SAFETY: Static text and a live owner remain valid for the modal dialog.
+                unsafe {
+                    MessageBoxW(
+                        self.window,
+                        w!(
+                            "Column selection gestures:\r\n\r\n1. Hold Alt while dragging with the left mouse button.\r\n\r\n2. Hold Alt+Shift while using the arrow keys.\r\n\r\n3. Put the caret at one corner and choose Begin/End Select in Column Mode. Move to the opposite corner and choose the command again.\r\n\r\nColumn editing is incomplete: copy, cut, paste, undo and document refresh do not yet preserve rectangular selections."
+                        ),
+                        w!("Column Mode Tip"),
+                        MB_OK | MB_ICONINFORMATION,
+                    );
+                }
+            }
+            IDM_EDIT_RTL | IDM_EDIT_LTR => {
+                let rtl = command == IDM_EDIT_RTL;
+                if rtl {
+                    self.rtl_buffers.insert(self.active_id());
+                } else {
+                    self.rtl_buffers.remove(&self.active_id());
+                }
+                crate::scintilla::text_direction(self.edit, rtl);
+                self.caption();
+            }
             IDM_FILE_SAVEALL => {
+                if self.save_all_confirm {
+                    let buttons = [
+                        TASKDIALOG_BUTTON {
+                            nButtonID: IDYES,
+                            pszButtonText: w!("&Yes"),
+                        },
+                        TASKDIALOG_BUTTON {
+                            nButtonID: IDRETRY,
+                            pszButtonText: w!("&Always yes"),
+                        },
+                        TASKDIALOG_BUTTON {
+                            nButtonID: IDNO,
+                            pszButtonText: w!("&No"),
+                        },
+                    ];
+                    let config = TASKDIALOGCONFIG {
+                        cbSize: size_of::<TASKDIALOGCONFIG>() as u32,
+                        hwndParent: self.window,
+                        dwFlags: TDF_ALLOW_DIALOG_CANCELLATION | TDF_POSITION_RELATIVE_TO_WINDOW,
+                        pszWindowTitle: w!("Save"),
+                        pszMainInstruction: w!("Save all modified documents?"),
+                        pszContent: w!(
+                            "Choose Always yes to save without this confirmation in future. You can enable confirmation again in Preferences."
+                        ),
+                        cButtons: buttons.len() as u32,
+                        pButtons: buttons.as_ptr(),
+                        nDefaultButton: IDYES,
+                        ..Default::default()
+                    };
+                    let mut answer = IDCANCEL;
+                    // SAFETY: The parent is live and all dialog strings and button storage
+                    // remain valid throughout this synchronous modal call.
+                    let result =
+                        unsafe { TaskDialogIndirect(&config, &mut answer, null_mut(), null_mut()) };
+                    if result < 0 {
+                        self.report(io::Error::other(format!(
+                            "Cannot display Save All confirmation (HRESULT {result:#x})"
+                        )));
+                        return;
+                    }
+                    if !matches!(answer, IDYES | IDRETRY) {
+                        return;
+                    }
+                    if answer == IDRETRY {
+                        self.save_all_confirm = false;
+                        if let Err(error) = crate::preferences::save(&self.current_preferences()) {
+                            self.report(error);
+                        }
+                    }
+                }
                 self.save_all_with(|app| app.save(false));
             }
             IDM_FILE_RELOAD => {
@@ -4080,13 +6046,19 @@ impl App {
             IDM_SEARCH_VOLATILE_FINDNEXT => self.find_selected(SearchDirection::Forward),
             IDM_SEARCH_VOLATILE_FINDPREV => self.find_selected(SearchDirection::Backward),
             IDM_FILE_NEW => {
-                self.workspace.add(Document::new());
+                self.add_new_document();
                 self.refresh();
             }
-            IDM_FILE_OPEN => match file_dialog(self.window, false) {
-                Ok(Some(path)) => {
-                    if let Err(e) = self.open(&path) {
-                        self.report(e);
+            IDM_FILE_OPEN => match file_dialog_paths(self.window, false, None, false, true) {
+                Ok(Some(paths)) => {
+                    let mut failures = Vec::new();
+                    for path in paths {
+                        if let Err(error) = self.open(&path) {
+                            failures.push(format!("{}: {error}", path.display()));
+                        }
+                    }
+                    if !failures.is_empty() {
+                        self.report(failures.join("\n"));
                     }
                 }
                 Ok(None) => (),
@@ -4125,6 +6097,9 @@ impl App {
             }
             DATE_FIRST => {
                 self.date_first = !self.date_first;
+                if let Err(error) = crate::preferences::save(&self.current_preferences()) {
+                    self.report(error);
+                }
                 // SAFETY: Scalar menu state update for the owned main menu.
                 unsafe {
                     CheckMenuItem(
@@ -4161,7 +6136,7 @@ impl App {
             IDM_FILE_CLOSE if self.confirm_close() => {
                 let _ = self.workspace.close(self.active_id(), true);
                 if self.workspace.active().is_none() {
-                    self.workspace.add(Document::new());
+                    self.add_new_document();
                 }
                 self.refresh();
             }
@@ -4243,23 +6218,245 @@ impl App {
             IDM_EDIT_SELECTALL => unsafe {
                 SendMessageW(self.edit, EM_SETSEL, 0, -1);
             },
+            IDM_EDIT_COPY_BINARY | IDM_EDIT_CUT_BINARY | IDM_EDIT_PASTE_BINARY => {
+                let (start, end) = control_selection(self.edit);
+                let selection = self.sync_native_selection(start, end);
+                let range = selection.range();
+                let result = (|| -> io::Result<()> {
+                    let replacement = if command == IDM_EDIT_PASTE_BINARY {
+                        let Some(bytes) = crate::clipboard::read_binary(self.window)? else {
+                            return Ok(());
+                        };
+                        String::from_utf8(bytes).map_err(|_| io::Error::other("Binary clipboard data is not valid UTF-8. The text document cannot yet represent arbitrary byte sequences."))?
+                    } else {
+                        if range.is_empty() {
+                            return Ok(());
+                        }
+                        crate::clipboard::write_binary(
+                            self.window,
+                            self.document().text()[range.clone()].as_bytes(),
+                        )?;
+                        if command == IDM_EDIT_COPY_BINARY {
+                            return Ok(());
+                        }
+                        String::new()
+                    };
+                    let before = self
+                        .macro_recording
+                        .then(|| self.document().text().to_owned());
+                    self.document_mut()
+                        .replace(range, &replacement)
+                        .map_err(io::Error::other)?;
+                    if let Some(before) = before {
+                        if let Some(step) = crate::macros::difference(
+                            &before,
+                            self.document().text(),
+                            selection.caret,
+                        ) {
+                            self.macro_steps.push(step);
+                        }
+                    }
+                    self.refresh();
+                    Ok(())
+                })();
+                if let Err(error) = result {
+                    self.report(error);
+                }
+            }
             IDM_EDIT_CUT
             | IDM_EDIT_COPY
             | IDM_EDIT_PASTE
             | IDM_EDIT_PASTE_AS_HTML
             | IDM_EDIT_PASTE_AS_RTF => {
+                use crate::scintilla::{ids::*, send};
+                if command == IDM_EDIT_PASTE {
+                    let result = (|| -> io::Result<bool> {
+                        let column = crate::clipboard::is_column(self.window)?;
+                        if !column && send(self.edit, SCI_GETSELECTIONS, 0, 0) <= 1 {
+                            return Ok(false);
+                        }
+                        let Some(text) = crate::clipboard::read_text(self.window)? else {
+                            return Ok(true);
+                        };
+                        let eol = match self.document().line_ending() {
+                            LineEnding::CrLf => SC_EOL_CRLF,
+                            LineEnding::Lf => SC_EOL_LF,
+                            LineEnding::Cr => SC_EOL_CR,
+                        };
+                        let before = self
+                            .macro_recording
+                            .then(|| self.document().text().to_owned());
+                        let caret = self.document().selection().caret;
+                        send(self.edit, SCI_SETEOLMODE, eol as usize, 0);
+                        UPDATING.set(true);
+                        if column {
+                            send(
+                                self.edit,
+                                SCI_REPLACERECTANGULAR,
+                                text.len(),
+                                text.as_ptr() as isize,
+                            );
+                        } else {
+                            let text = self.document().line_ending().convert(&text);
+                            let count = send(self.edit, SCI_GETSELECTIONS, 0, 0) as usize;
+                            let mut selections: Vec<_> = (0..count)
+                                .map(|index| {
+                                    (
+                                        send(self.edit, SCI_GETSELECTIONNSTART, index, 0) as usize,
+                                        send(self.edit, SCI_GETSELECTIONNEND, index, 0) as usize,
+                                        send(
+                                            self.edit,
+                                            SCI_GETSELECTIONNSTARTVIRTUALSPACE,
+                                            index,
+                                            0,
+                                        ) as usize,
+                                        index,
+                                    )
+                                })
+                                .collect();
+                            selections.sort_by_key(|range| std::cmp::Reverse(range.0));
+                            for (start, end, padding, index) in selections {
+                                let inserted = format!("{}{}", " ".repeat(padding), text);
+                                send(self.edit, SCI_SETTARGETSTART, start, 0);
+                                send(self.edit, SCI_SETTARGETEND, end, 0);
+                                send(
+                                    self.edit,
+                                    SCI_REPLACETARGET,
+                                    inserted.len(),
+                                    inserted.as_ptr() as isize,
+                                );
+                                let caret = start + inserted.len();
+                                send(self.edit, SCI_SETSELECTIONNCARET, index, caret as isize);
+                                send(self.edit, SCI_SETSELECTIONNANCHOR, index, caret as isize);
+                                send(self.edit, SCI_SETSELECTIONNCARETVIRTUALSPACE, index, 0);
+                                send(self.edit, SCI_SETSELECTIONNANCHORVIRTUALSPACE, index, 0);
+                            }
+                        }
+                        UPDATING.set(false);
+                        let edited = crate::scintilla::text(self.edit);
+                        let id = self.active_id();
+                        if let Err(error) = self
+                            .projection
+                            .apply_exact(self.workspace.get_mut(id).unwrap(), &edited)
+                        {
+                            self.refresh();
+                            return Err(io::Error::other(error));
+                        }
+                        self.projection = Projection::new(self.document().text());
+                        let (start, end) = control_selection(self.edit);
+                        self.sync_native_selection(start, end);
+                        if let Some(before) = before {
+                            if let Some(step) =
+                                crate::macros::difference(&before, self.document().text(), caret)
+                            {
+                                self.macro_steps.push(step);
+                            }
+                        }
+                        self.caption();
+                        self.refresh_tabs();
+                        Ok(true)
+                    })();
+                    match result {
+                        Ok(true) => return,
+                        Err(error) => {
+                            self.report(error);
+                            return;
+                        }
+                        Ok(false) => {}
+                    }
+                }
+                let count = send(self.edit, SCI_GETSELECTIONS, 0, 0) as usize;
+                let rectangular = send(self.edit, SCI_SELECTIONISRECTANGLE, 0, 0) != 0;
+                if matches!(command, IDM_EDIT_COPY | IDM_EDIT_CUT) && (count > 1 || rectangular) {
+                    let result = (|| -> io::Result<()> {
+                        if send(self.edit, SCI_GETSELECTIONEMPTY, 0, 0) != 0 {
+                            return Ok(());
+                        }
+                        let length = send(self.edit, SCI_GETSELTEXT, 0, 0) as usize;
+                        let mut bytes = vec![0; length + 1];
+                        send(self.edit, SCI_GETSELTEXT, 0, bytes.as_mut_ptr() as isize);
+                        bytes.truncate(length);
+                        let text = String::from_utf8(bytes).map_err(io::Error::other)?;
+                        // Bundled Scintilla marks every multi-range copy as
+                        // column-shaped, including disjoint stream selections.
+                        if count > 1 {
+                            crate::clipboard::write_column(self.window, &text)?;
+                        } else {
+                            crate::clipboard::write_text(self.window, &text)?;
+                        }
+                        if command == IDM_EDIT_CUT {
+                            let mut ranges: Vec<_> = (0..count)
+                                .map(|index| {
+                                    let a =
+                                        send(self.edit, SCI_GETSELECTIONNSTART, index, 0) as usize;
+                                    let b =
+                                        send(self.edit, SCI_GETSELECTIONNEND, index, 0) as usize;
+                                    a..b
+                                })
+                                .filter(|range| !range.is_empty())
+                                .collect();
+                            ranges.sort_by_key(|range| range.start);
+                            if let (Some(first), Some(last)) = (ranges.first(), ranges.last()) {
+                                let span = first.start..last.end;
+                                let mut replacement = String::new();
+                                let mut cursor = span.start;
+                                for range in &ranges {
+                                    if range.start > cursor {
+                                        replacement
+                                            .push_str(&self.document().text()[cursor..range.start]);
+                                    }
+                                    cursor = cursor.max(range.end);
+                                }
+                                let before = self
+                                    .macro_recording
+                                    .then(|| self.document().text().to_owned());
+                                let caret = self.document().selection().caret;
+                                self.document_mut()
+                                    .replace(span, &replacement)
+                                    .map_err(io::Error::other)?;
+                                if let Some(before) = before {
+                                    if let Some(step) = crate::macros::difference(
+                                        &before,
+                                        self.document().text(),
+                                        caret,
+                                    ) {
+                                        self.macro_steps.push(step);
+                                    }
+                                }
+                            }
+                            send(self.edit, SCI_CLEAR, 0, 0);
+                            self.projection = Projection::new(self.document().text());
+                            self.caption();
+                            self.refresh_tabs();
+                        }
+                        Ok(())
+                    })();
+                    if let Err(error) = result {
+                        self.report(error);
+                    }
+                    return;
+                }
                 let (start, end) = control_selection(self.edit);
                 let selection = self.sync_native_selection(start, end);
-                let range = selection.range();
+                let mut range = selection.range();
                 let result = (|| -> io::Result<()> {
                     if command == IDM_EDIT_COPY || command == IDM_EDIT_CUT {
                         if range.is_empty() {
-                            return Ok(());
+                            if !self.copy_cut_line {
+                                return Ok(());
+                            }
+                            range = self.document().selected_line_range();
+                            let line = self.document().text()[range.clone()]
+                                .trim_end_matches(['\r', '\n']);
+                            let copied =
+                                format!("{}{}", line, self.document().line_ending().as_str());
+                            crate::clipboard::write_line(self.window, &copied)?;
+                        } else {
+                            crate::clipboard::write_text(
+                                self.window,
+                                &self.document().text()[range.clone()],
+                            )?;
                         }
-                        crate::clipboard::write_text(
-                            self.window,
-                            &self.document().text()[range.clone()],
-                        )?;
                         if command == IDM_EDIT_COPY {
                             return Ok(());
                         }
@@ -4270,6 +6467,10 @@ impl App {
                         let Some(text) = crate::clipboard::read_text(self.window)? else {
                             return Ok(());
                         };
+                        if range.is_empty() && crate::clipboard::is_line() {
+                            let start = self.document().selected_line_range().start;
+                            range = start..start;
+                        }
                         self.document().line_ending().convert(&text)
                     } else {
                         let format = if command == IDM_EDIT_PASTE_AS_HTML {
@@ -4465,6 +6666,7 @@ impl App {
                     let open_files = self
                         .workspace
                         .buffers()
+                        .filter(|_| !self.find_files_prefer_disk)
                         .filter_map(|(_, document)| {
                             document.path().map(|path| {
                                 (
@@ -4587,6 +6789,16 @@ impl App {
                     self.sync_native_selection(start, end);
                     self.caption();
                 }
+                Event::BookmarkMargin(line) => {
+                    if let Err(error) = self.document_mut().toggle_bookmark(line) {
+                        self.report(error);
+                    }
+                    self.caption();
+                }
+                Event::RehideMarkedLines => {
+                    // Run after the native edit/fold notification stack has unwound.
+                    crate::scintilla::rehide_marked_lines(self.edit);
+                }
                 Event::NativeChanged => {
                     let (start, end) = control_selection(self.edit);
                     EVENTS.with_borrow_mut(|events| {
@@ -4607,7 +6819,7 @@ impl App {
                     let id = self.active_id();
                     if let Err(e) = self
                         .projection
-                        .apply(self.workspace.get_mut(id).unwrap(), &text)
+                        .apply_exact(self.workspace.get_mut(id).unwrap(), &text)
                     {
                         self.report(e);
                         self.refresh();
@@ -4623,6 +6835,13 @@ impl App {
                     }
                     let selection = self.projection.selection(start, end);
                     let _ = self.document_mut().select(selection);
+                    if self.projection.text != text {
+                        self.refresh();
+                        continue;
+                    }
+                    if self.content_tab_names {
+                        self.workspace.name_from_first_line(self.active_id());
+                    }
                     self.caption();
                     self.refresh_tabs();
                 }
@@ -4638,6 +6857,11 @@ impl App {
                         }
                     }
                 }
+                Event::DoubleClickTab(index) => {
+                    if self.double_click_close {
+                        enqueue(Event::CloseTab(index));
+                    }
+                }
                 Event::CloseTab(index) => {
                     let id = self.workspace.buffers().nth(index).map(|(id, _)| id);
                     if let Some(id) = id {
@@ -4648,6 +6872,9 @@ impl App {
                     }
                 }
                 Event::MoveTab(from, to) => {
+                    if self.lock_tab_drag {
+                        continue;
+                    }
                     let id = self.workspace.buffers().nth(from).map(|(id, _)| id);
                     if let Some(id) = id {
                         self.workspace.activate(id);
@@ -4755,8 +6982,18 @@ fn file_dialog_options(
     title: Option<&str>,
     session: bool,
 ) -> io::Result<Option<PathBuf>> {
+    Ok(file_dialog_paths(owner, save, title, session, false)?
+        .and_then(|paths| paths.into_iter().next()))
+}
+fn file_dialog_paths(
+    owner: HWND,
+    save: bool,
+    title: Option<&str>,
+    session: bool,
+    multiple: bool,
+) -> io::Result<Option<Vec<PathBuf>>> {
     let title = title.map(wide);
-    let mut path = vec![0u16; 32768];
+    let mut path = vec![0u16; if multiple { 1024 * 1024 } else { 32768 }];
     let mut dialog = OPENFILENAMEW {
         lStructSize: size_of::<OPENFILENAMEW>() as u32,
         hwndOwner: owner,
@@ -4772,6 +7009,11 @@ fn file_dialog_options(
         Flags: OFN_EXPLORER
             | OFN_NOCHANGEDIR
             | OFN_PATHMUSTEXIST
+            | if multiple && !save {
+                OFN_ALLOWMULTISELECT
+            } else {
+                0
+            }
             | if save {
                 OFN_OVERWRITEPROMPT
             } else {
@@ -4795,10 +7037,20 @@ fn file_dialog_options(
             };
         }
     }
-    let length = path.iter().position(|&ch| ch == 0).unwrap();
-    Ok(Some(PathBuf::from(std::ffi::OsString::from_wide(
-        &path[..length],
-    ))))
+    // Explorer format: one full path, or directory followed by file names,
+    // terminated by an empty string. Preserve the dialog's returned order.
+    let mut parts = path
+        .split(|&ch| ch == 0)
+        .take_while(|part| !part.is_empty());
+    let first = PathBuf::from(std::ffi::OsString::from_wide(
+        parts.next().unwrap_or_default(),
+    ));
+    let names: Vec<_> = parts.map(std::ffi::OsString::from_wide).collect();
+    Ok(Some(if names.is_empty() {
+        vec![first]
+    } else {
+        names.into_iter().map(|name| first.join(name)).collect()
+    }))
 }
 // Source menu grouping follows Notepad_plus.rc; only implemented commands appear.
 enum MenuEntry {
@@ -4845,7 +7097,11 @@ unsafe fn create_menu() -> HMENU {
                 ),
                 MenuEntry::Popup(
                     "Open Containing &Folder",
-                    &[MenuEntry::Command(IDM_FILE_OPEN_FOLDER, "Explorer")],
+                    &[
+                        MenuEntry::Command(IDM_FILE_OPEN_FOLDER, "Explorer"),
+                        MenuEntry::Command(IDM_FILE_OPEN_CMD, "cmd"),
+                        MenuEntry::Command(IDM_FILE_OPEN_POWERSHELL, "PowerShell"),
+                    ],
                 ),
                 MenuEntry::Command(IDM_FILE_OPEN_DEFAULT_VIEWER, "Open in &Default Viewer"),
                 MenuEntry::Command(IDM_FILE_RELOAD, "Re&load from Disk"),
@@ -4870,6 +7126,13 @@ unsafe fn create_menu() -> HMENU {
                     ],
                 ),
                 MenuEntry::Separator,
+                MenuEntry::Popup(
+                    "Recent Files",
+                    &[
+                        MenuEntry::Command(IDM_OPEN_ALL_RECENT_FILE, "Open All Recent Files"),
+                        MenuEntry::Command(IDM_CLEAN_RECENT_FILE_LIST, "Clear Recent Files List"),
+                    ],
+                ),
                 MenuEntry::Command(
                     IDM_FILE_RESTORELASTCLOSEDFILE,
                     "Restore Last Closed File\tCtrl+Shift+T",
@@ -4896,10 +7159,52 @@ unsafe fn create_menu() -> HMENU {
                 MenuEntry::Popup(
                     "Paste Special",
                     &[
+                        MenuEntry::Command(IDM_EDIT_COPY_BINARY, "Copy Binary Content"),
+                        MenuEntry::Command(IDM_EDIT_CUT_BINARY, "Cut Binary Content"),
+                        MenuEntry::Command(IDM_EDIT_PASTE_BINARY, "Paste Binary Content"),
                         MenuEntry::Command(IDM_EDIT_PASTE_AS_HTML, "Paste HTML Content"),
                         MenuEntry::Command(IDM_EDIT_PASTE_AS_RTF, "Paste RTF Content"),
                     ],
                 ),
+                MenuEntry::Popup(
+                    "Multi-select All",
+                    &[
+                        MenuEntry::Command(IDM_EDIT_MULTISELECTALL, "Ignore Case && Whole Word"),
+                        MenuEntry::Command(IDM_EDIT_MULTISELECTALLMATCHCASE, "Match Case Only"),
+                        MenuEntry::Command(
+                            IDM_EDIT_MULTISELECTALLWHOLEWORD,
+                            "Match Whole Word Only",
+                        ),
+                        MenuEntry::Command(
+                            IDM_EDIT_MULTISELECTALLMATCHCASEWHOLEWORD,
+                            "Match Case && Whole Word",
+                        ),
+                    ],
+                ),
+                MenuEntry::Popup(
+                    "Multi-select Next",
+                    &[
+                        MenuEntry::Command(IDM_EDIT_MULTISELECTNEXT, "Ignore Case && Whole Word"),
+                        MenuEntry::Command(IDM_EDIT_MULTISELECTNEXTMATCHCASE, "Match Case Only"),
+                        MenuEntry::Command(
+                            IDM_EDIT_MULTISELECTNEXTWHOLEWORD,
+                            "Match Whole Word Only",
+                        ),
+                        MenuEntry::Command(
+                            IDM_EDIT_MULTISELECTNEXTMATCHCASEWHOLEWORD,
+                            "Match Case && Whole Word",
+                        ),
+                    ],
+                ),
+                MenuEntry::Command(
+                    IDM_EDIT_MULTISELECTUNDO,
+                    "Undo the Latest Added Multi-Select",
+                ),
+                MenuEntry::Command(
+                    IDM_EDIT_MULTISELECTSSKIP,
+                    "Skip Current && Go to Next Multi-select",
+                ),
+                MenuEntry::Command(IDM_EDIT_COLUMNMODETIP, "Column Mode..."),
                 MenuEntry::Command(IDM_EDIT_SELECTALL, "&Select All\tCtrl+A"),
                 MenuEntry::Command(IDM_EDIT_DELETE, "Delete"),
                 MenuEntry::Popup(
@@ -4923,6 +7228,8 @@ unsafe fn create_menu() -> HMENU {
                     "On Selection",
                     &[
                         MenuEntry::Command(IDM_EDIT_OPENSELECTEDFILETOEDIT, "Open File"),
+                        MenuEntry::Command(IDM_EDIT_SEARCHONINTERNET, "Search on Internet"),
+                        MenuEntry::Command(IDM_EDIT_CHANGESEARCHENGINE, "Change Search Engine..."),
                         MenuEntry::Command(
                             IDM_EDIT_OPENSELECTEDFILEFOLDERINEXPLORER,
                             "Open Containing Folder in Explorer",
@@ -4934,6 +7241,10 @@ unsafe fn create_menu() -> HMENU {
                     ],
                 ),
                 MenuEntry::Command(IDM_EDIT_BEGINENDSELECT, "Begin/End &Select\tCtrl+Shift+B"),
+                MenuEntry::Command(
+                    IDM_EDIT_BEGINENDSELECT_COLUMNMODE,
+                    "Begin/End Select in Column Mode",
+                ),
                 MenuEntry::Separator,
                 MenuEntry::Popup(
                     "Insert",
@@ -5001,6 +7312,7 @@ unsafe fn create_menu() -> HMENU {
                             IDM_EDIT_REMOVE_CONSECUTIVE_DUP_LINES,
                             "Remove Consecutive Duplicate Lines",
                         ),
+                        MenuEntry::Command(IDM_EDIT_SPLIT_LINES, "Split Lines\tCtrl+I"),
                         MenuEntry::Command(IDM_EDIT_JOIN_LINES, "Join Lines\tCtrl+J"),
                         MenuEntry::Command(IDM_EDIT_LINE_UP, "Move Up Current Line\tCtrl+Shift+Up"),
                         MenuEntry::Command(
@@ -5227,7 +7539,34 @@ unsafe fn create_menu() -> HMENU {
         MenuEntry::Popup(
             "&View",
             &[
+                MenuEntry::Popup(
+                    "View Current File in",
+                    &[
+                        MenuEntry::Command(IDM_VIEW_IN_FIREFOX, "Firefox"),
+                        MenuEntry::Command(IDM_VIEW_IN_CHROME, "Chrome"),
+                        MenuEntry::Command(IDM_VIEW_IN_EDGE, "Edge"),
+                        MenuEntry::Command(IDM_VIEW_IN_IE, "Internet Explorer"),
+                    ],
+                ),
                 MenuEntry::Command(IDM_VIEW_WRAP, "Word Wrap"),
+                MenuEntry::Command(IDM_VIEW_HIDELINES, "Hide Lines\tAlt+H"),
+                MenuEntry::Command(IDM_EDIT_RTL, "Text Direction RTL\tCtrl+Alt+R"),
+                MenuEntry::Command(IDM_EDIT_LTR, "Text Direction LTR\tCtrl+Alt+L"),
+                MenuEntry::Popup(
+                    "Show Symbol",
+                    &[
+                        MenuEntry::Command(IDM_VIEW_NPC, "Show Non-Printing Characters"),
+                        MenuEntry::Command(
+                            IDM_VIEW_NPC_CCUNIEOL,
+                            "Show Control Characters && Unicode EOL",
+                        ),
+                        MenuEntry::Command(IDM_VIEW_ALL_CHARACTERS, "Show All Characters"),
+                        MenuEntry::Command(IDM_VIEW_TAB_SPACE, "Show Space and Tab"),
+                        MenuEntry::Command(IDM_VIEW_EOL, "Show End of Line"),
+                        MenuEntry::Command(IDM_VIEW_INDENT_GUIDE, "Show Indent Guide"),
+                        MenuEntry::Command(IDM_VIEW_WRAP_SYMBOL, "Show Wrap Symbol"),
+                    ],
+                ),
                 MenuEntry::Separator,
                 MenuEntry::Command(IDM_VIEW_FOLDALL, "Fold All\tAlt+0"),
                 MenuEntry::Command(IDM_VIEW_UNFOLDALL, "Unfold All\tAlt+Shift+0"),
@@ -5260,6 +7599,8 @@ unsafe fn create_menu() -> HMENU {
                     ],
                 ),
                 MenuEntry::Separator,
+                MenuEntry::Command(IDM_VIEW_POSTIT, "Post-It\tF12"),
+                MenuEntry::Command(IDM_VIEW_DISTRACTIONFREE, "Distraction Free Mode"),
                 MenuEntry::Command(IDM_VIEW_ALWAYSONTOP, "Always on Top"),
                 MenuEntry::Command(IDM_VIEW_FULLSCREENTOGGLE, "Toggle Full Screen Mode\tF11"),
                 MenuEntry::Popup(
@@ -5517,6 +7858,7 @@ pub fn run() -> io::Result<()> {
         (b'D', IDM_EDIT_DUP_LINE),
         (b'T', TRANSPOSE_LINE),
         (b'J', IDM_EDIT_JOIN_LINES),
+        (b'I', IDM_EDIT_SPLIT_LINES),
         (b'U', IDM_EDIT_LOWERCASE),
         (b'F', IDM_SEARCH_FIND),
         (b'G', IDM_SEARCH_GOTOLINE),
@@ -5526,6 +7868,9 @@ pub fn run() -> io::Result<()> {
         (b'O', IDM_FILE_OPEN),
         (b'S', IDM_FILE_SAVE),
         (b'W', IDM_FILE_CLOSE),
+        (b'C', IDM_EDIT_COPY),
+        (b'X', IDM_EDIT_CUT),
+        (b'V', IDM_EDIT_PASTE),
         (b'Z', IDM_EDIT_UNDO),
         (b'Y', IDM_EDIT_REDO),
         (b'A', IDM_EDIT_SELECTALL),
@@ -5538,6 +7883,23 @@ pub fn run() -> io::Result<()> {
             cmd: cmd as u16,
         })
         .collect();
+    for (modifiers, key, command) in [
+        (FALT, b'H' as u16, IDM_VIEW_HIDELINES),
+        (FCONTROL, VK_INSERT, IDM_EDIT_COPY),
+        (FSHIFT, VK_INSERT, IDM_EDIT_PASTE),
+        (FSHIFT, VK_DELETE, IDM_EDIT_CUT),
+    ] {
+        bindings.push(ACCEL {
+            fVirt: FVIRTKEY | modifiers,
+            key,
+            cmd: command as u16,
+        });
+    }
+    bindings.push(ACCEL {
+        fVirt: FVIRTKEY,
+        key: VK_F12,
+        cmd: IDM_VIEW_POSTIT as u16,
+    });
     bindings.push(ACCEL {
         fVirt: FVIRTKEY,
         key: VK_F11,
@@ -5548,6 +7910,13 @@ pub fn run() -> io::Result<()> {
             fVirt: FVIRTKEY | FCONTROL,
             key: b'1' as u16 + index,
             cmd: IDM_VIEW_TAB1 as u16 + index,
+        });
+    }
+    for (key, command) in [(b'R', IDM_EDIT_RTL), (b'L', IDM_EDIT_LTR)] {
+        bindings.push(ACCEL {
+            fVirt: FVIRTKEY | FCONTROL | FALT,
+            key: key as u16,
+            cmd: command as u16,
         });
     }
     bindings.push(ACCEL {

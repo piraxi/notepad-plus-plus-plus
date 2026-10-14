@@ -47,6 +47,8 @@ mod printing;
 #[cfg(windows)]
 mod projection;
 #[cfg(windows)]
+mod recent_files;
+#[cfg(windows)]
 mod scintilla;
 #[cfg(windows)]
 mod search_dialog;

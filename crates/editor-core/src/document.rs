@@ -122,18 +122,26 @@ impl Default for Document {
 
 impl Document {
     pub fn new() -> Self {
+        Self::new_with_line_ending(LineEnding::CrLf)
+    }
+
+    pub fn new_with_line_ending(ending: LineEnding) -> Self {
+        Self::new_with_format(ending, Encoding::Utf8)
+    }
+
+    pub fn new_with_format(ending: LineEnding, encoding: Encoding) -> Self {
         let text_revision = Arc::new(());
         Self {
             bookmarks: crate::bookmarks::Bookmarks::default(),
             state: State {
                 text: String::new(),
                 selection: Selection::default(),
-                encoding: Encoding::Utf8,
-                line_ending: LineEnding::CrLf,
+                encoding,
+                line_ending: ending,
             },
             saved_revision: text_revision.clone(),
             text_revision,
-            saved_encoding: Encoding::Utf8,
+            saved_encoding: encoding,
             saved_digest: None,
             path: None,
             read_only: false,
@@ -185,6 +193,13 @@ impl Document {
         document.path = Some(path.to_owned());
         document.file_read_only = std::fs::metadata(path)?.permissions().readonly();
         Ok(document)
+    }
+
+    /// Identity of the current text/history state, for validating view caches.
+    /// Compare tokens with `Arc::ptr_eq`, not value equality. Undo restores the
+    /// original identity; selection-only changes do not invalidate it.
+    pub fn text_revision_token(&self) -> Arc<()> {
+        self.text_revision.clone()
     }
 
     pub fn text(&self) -> &str {

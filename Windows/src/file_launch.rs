@@ -105,6 +105,161 @@ fn execute(owner: HWND, path: &Path, explore: bool) -> io::Result<()> {
     }
 }
 
+pub fn terminal(owner: HWND, directory: &Path, executable: &Path) -> io::Result<()> {
+    let directory = wide(directory);
+    let executable = wide(executable);
+    // Keep the working directory separate from shell command text: Unicode,
+    // spaces, quotes and shell metacharacters in folder names are not commands.
+    let result = unsafe {
+        ShellExecuteW(
+            owner,
+            windows_sys::core::w!("open"),
+            executable.as_ptr(),
+            null(),
+            directory.as_ptr(),
+            SW_SHOWNORMAL,
+        )
+    } as isize;
+    if result <= 32 {
+        Err(io::Error::other(format!(
+            "Could not open terminal (shell error {result})"
+        )))
+    } else {
+        Ok(())
+    }
+}
+
+pub fn powershell_path() -> io::Result<std::path::PathBuf> {
+    use std::os::windows::ffi::OsStringExt;
+    use windows_sys::Win32::System::Registry::*;
+    let mut size = 0u32;
+    let key =
+        windows_sys::core::w!("SOFTWARE\\Microsoft\\PowerShell\\1\\ShellIds\\Microsoft.PowerShell");
+    let value = windows_sys::core::w!("Path");
+    // Read the same registered executable used by upstream; size in bytes.
+    unsafe {
+        let result = RegGetValueW(
+            HKEY_LOCAL_MACHINE,
+            key,
+            value,
+            RRF_RT_REG_SZ,
+            null_mut(),
+            null_mut(),
+            &mut size,
+        );
+        if result != 0 {
+            return Err(io::Error::from_raw_os_error(result as i32));
+        }
+        let mut buffer = vec![0u16; (size as usize).div_ceil(2)];
+        let result = RegGetValueW(
+            HKEY_LOCAL_MACHINE,
+            key,
+            value,
+            RRF_RT_REG_SZ,
+            null_mut(),
+            buffer.as_mut_ptr().cast(),
+            &mut size,
+        );
+        if result != 0 {
+            return Err(io::Error::from_raw_os_error(result as i32));
+        }
+        let length = buffer.iter().position(|&c| c == 0).unwrap_or(buffer.len());
+        if length == 0 {
+            return Err(io::Error::other("PowerShell has no registered executable"));
+        }
+        Ok(std::ffi::OsString::from_wide(&buffer[..length]).into())
+    }
+}
+
+/// Resolve the registered browser without invoking a command interpreter.
+pub fn browser(owner: HWND, path: &Path, executable: &str) -> io::Result<()> {
+    use std::os::windows::ffi::OsStringExt;
+    use windows_sys::Win32::System::Registry::*;
+    let key: Vec<u16> =
+        format!("SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\{executable}")
+            .encode_utf16()
+            .chain(Some(0))
+            .collect();
+    let mut registered = None;
+    // Per-user installations supplement the machine-wide path used upstream.
+    for hive in [HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE] {
+        let mut size = 0;
+        unsafe {
+            if RegGetValueW(
+                hive,
+                key.as_ptr(),
+                null(),
+                RRF_RT_REG_SZ,
+                null_mut(),
+                null_mut(),
+                &mut size,
+            ) != 0
+            {
+                continue;
+            }
+            let mut value = vec![0u16; (size as usize).div_ceil(2)];
+            if RegGetValueW(
+                hive,
+                key.as_ptr(),
+                null(),
+                RRF_RT_REG_SZ,
+                null_mut(),
+                value.as_mut_ptr().cast(),
+                &mut size,
+            ) == 0
+            {
+                let end = value.iter().position(|&c| c == 0).unwrap_or(value.len());
+                if end > 0 {
+                    registered = Some(std::ffi::OsString::from_wide(&value[..end]));
+                    break;
+                }
+            }
+        }
+    }
+    let legacy_edge = registered.is_none() && executable == "msedge.exe";
+    let executable = registered
+        .or_else(|| {
+            legacy_edge.then(|| {
+                std::ffi::OsString::from(
+                    "shell:Appsfolder\\Microsoft.MicrosoftEdge_8wekyb3d8bbwe!MicrosoftEdge",
+                )
+            })
+        })
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("{executable} is not registered on this system"),
+            )
+        })?;
+    let executable = wide(Path::new(&executable));
+    let mut arguments = Vec::new();
+    if !legacy_edge {
+        arguments.push(b'"' as u16);
+    }
+    arguments.extend(path.as_os_str().encode_wide());
+    if !legacy_edge {
+        arguments.push(b'"' as u16);
+    }
+    arguments.push(0);
+    let result = unsafe {
+        ShellExecuteW(
+            owner,
+            windows_sys::core::w!("open"),
+            executable.as_ptr(),
+            arguments.as_ptr(),
+            null(),
+            SW_SHOWNORMAL,
+        )
+    } as isize;
+    if result <= 32 {
+        Err(io::Error::other(format!(
+            "Could not open browser (shell error {result})"
+        )))
+    } else {
+        Ok(())
+    }
+}
+
 pub fn launch(owner: HWND, path: &Path, action: Action) -> io::Result<()> {
     if action == Action::DefaultViewer {
         return execute(owner, path, false);
