@@ -1,0 +1,480 @@
+Menu,Label,Upstream command,Referenced by menu builder,Referenced by dispatcher,Implementation notes
+File,New,IDM_FILE_NEW,yes,yes,Manual behavioral review required
+File,Open...,IDM_FILE_OPEN,yes,yes,Manual behavioral review required
+File > Open Containing Folder,Explorer,IDM_FILE_OPEN_FOLDER,yes,yes,Manual behavioral review required
+File > Open Containing Folder,cmd,IDM_FILE_OPEN_CMD,no,no,Manual behavioral review required
+File > Open Containing Folder,PowerShell,IDM_FILE_OPEN_POWERSHELL,no,no,Manual behavioral review required
+File > Open Containing Folder,Folder as Workspace,IDM_FILE_CONTAININGFOLDERASWORKSPACE,no,no,Manual behavioral review required
+File,Open in Default Viewer,IDM_FILE_OPEN_DEFAULT_VIEWER,yes,yes,Manual behavioral review required
+File,Open Folder as Workspace...,IDM_FILE_OPENFOLDERASWORKSPACE,no,no,Manual behavioral review required
+File,Reload from Disk,IDM_FILE_RELOAD,yes,yes,Manual behavioral review required
+File,Save,IDM_FILE_SAVE,yes,yes,Manual behavioral review required
+File,Save As...,IDM_FILE_SAVEAS,yes,yes,Manual behavioral review required
+File,Save a Copy As...,IDM_FILE_SAVECOPYAS,yes,yes,Manual behavioral review required
+File,Save All,IDM_FILE_SAVEALL,yes,yes,Manual behavioral review required
+File,Rename...,IDM_FILE_RENAME,yes,yes,Manual behavioral review required
+File,Close,IDM_FILE_CLOSE,yes,yes,Manual behavioral review required
+File,Close All,IDM_FILE_CLOSEALL,yes,yes,Manual behavioral review required
+File > Close Multiple Documents,Close All but Active Document,IDM_FILE_CLOSEALL_BUT_CURRENT,yes,yes,Manual behavioral review required
+File > Close Multiple Documents,Close All but Pinned Documents,IDM_FILE_CLOSEALL_BUT_PINNED,no,no,Manual behavioral review required
+File > Close Multiple Documents,Close All to the Left,IDM_FILE_CLOSEALL_TOLEFT,yes,yes,Manual behavioral review required
+File > Close Multiple Documents,Close All to the Right,IDM_FILE_CLOSEALL_TORIGHT,yes,yes,Manual behavioral review required
+File > Close Multiple Documents,Close All Unchanged,IDM_FILE_CLOSEALL_UNCHANGED,yes,yes,Manual behavioral review required
+File,Move to Recycle Bin,IDM_FILE_DELETE,yes,yes,Manual behavioral review required
+File,Load Session...,IDM_FILE_LOADSESSION,yes,yes,Manual behavioral review required
+File,Save Session...,IDM_FILE_SAVESESSION,yes,yes,Manual behavioral review required
+File,Print...,IDM_FILE_PRINT,yes,yes,Manual behavioral review required
+File,Print Now,IDM_FILE_PRINTNOW,yes,yes,Manual behavioral review required
+File,Exit,IDM_FILE_EXIT,yes,yes,Manual behavioral review required
+Edit,Undo,IDM_EDIT_UNDO,yes,yes,Manual behavioral review required
+Edit,Redo,IDM_EDIT_REDO,yes,yes,Manual behavioral review required
+Edit,Cut,IDM_EDIT_CUT,yes,yes,Manual behavioral review required
+Edit,Copy,IDM_EDIT_COPY,yes,yes,Manual behavioral review required
+Edit,Paste,IDM_EDIT_PASTE,yes,yes,Manual behavioral review required
+Edit,Delete,IDM_EDIT_DELETE,yes,yes,Manual behavioral review required
+Edit,Select All,IDM_EDIT_SELECTALL,yes,yes,Manual behavioral review required
+Edit,Begin/End Select,IDM_EDIT_BEGINENDSELECT,yes,yes,Manual behavioral review required
+Edit,Begin/End Select in Column Mode,IDM_EDIT_BEGINENDSELECT_COLUMNMODE,no,no,Manual behavioral review required
+Edit > Insert,Date Time (short),IDM_EDIT_INSERT_DATETIME_SHORT,yes,yes,Manual behavioral review required
+Edit > Insert,Date Time (long),IDM_EDIT_INSERT_DATETIME_LONG,yes,yes,Manual behavioral review required
+Edit > Insert,Date Time (customized),IDM_EDIT_INSERT_DATETIME_CUSTOMIZED,yes,yes,Manual behavioral review required
+Edit > Copy to Clipboard,Copy Current Full File path,IDM_EDIT_FULLPATHTOCLIP,yes,yes,Manual behavioral review required
+Edit > Copy to Clipboard,Copy Current Filename,IDM_EDIT_FILENAMETOCLIP,yes,yes,Manual behavioral review required
+Edit > Copy to Clipboard,Copy Current Dir. Path,IDM_EDIT_CURRENTDIRTOCLIP,yes,yes,Manual behavioral review required
+Edit > Copy to Clipboard,Copy All Filenames,IDM_EDIT_COPY_ALL_NAMES,yes,yes,Manual behavioral review required
+Edit > Copy to Clipboard,Copy All File Paths,IDM_EDIT_COPY_ALL_PATHS,yes,yes,Manual behavioral review required
+Edit > Indent,Increase Line Indent,IDM_EDIT_INS_TAB,yes,yes,Manual behavioral review required
+Edit > Indent,Decrease Line Indent,IDM_EDIT_RMV_TAB,yes,yes,Manual behavioral review required
+Edit > Convert Case to,UPPERCASE,IDM_EDIT_UPPERCASE,yes,yes,Manual behavioral review required
+Edit > Convert Case to,lowercase,IDM_EDIT_LOWERCASE,yes,yes,Manual behavioral review required
+Edit > Convert Case to,Proper Case,IDM_EDIT_PROPERCASE_FORCE,yes,yes,Manual behavioral review required
+Edit > Convert Case to,Proper Case (blend),IDM_EDIT_PROPERCASE_BLEND,yes,yes,Manual behavioral review required
+Edit > Convert Case to,Sentence case,IDM_EDIT_SENTENCECASE_FORCE,yes,yes,Manual behavioral review required
+Edit > Convert Case to,Sentence case (blend),IDM_EDIT_SENTENCECASE_BLEND,yes,yes,Manual behavioral review required
+Edit > Convert Case to,iNVERT cASE,IDM_EDIT_INVERTCASE,yes,yes,Manual behavioral review required
+Edit > Convert Case to,ranDOm CasE,IDM_EDIT_RANDOMCASE,yes,yes,Manual behavioral review required
+Edit > Line Operations,Duplicate Current Line,IDM_EDIT_DUP_LINE,yes,yes,Manual behavioral review required
+Edit > Line Operations,Remove Duplicate Lines,IDM_EDIT_REMOVE_ANY_DUP_LINES,yes,yes,Manual behavioral review required
+Edit > Line Operations,Remove Consecutive Duplicate Lines,IDM_EDIT_REMOVE_CONSECUTIVE_DUP_LINES,yes,yes,Manual behavioral review required
+Edit > Line Operations,Split Lines,IDM_EDIT_SPLIT_LINES,no,no,Manual behavioral review required
+Edit > Line Operations,Join Lines,IDM_EDIT_JOIN_LINES,yes,yes,Manual behavioral review required
+Edit > Line Operations,Move Up Current Line,IDM_EDIT_LINE_UP,yes,yes,Manual behavioral review required
+Edit > Line Operations,Move Down Current Line,IDM_EDIT_LINE_DOWN,yes,yes,Manual behavioral review required
+Edit > Line Operations,Remove Empty Lines,IDM_EDIT_REMOVEEMPTYLINES,yes,yes,Manual behavioral review required
+Edit > Line Operations,Remove Empty Lines (Containing Blank characters),IDM_EDIT_REMOVEEMPTYLINESWITHBLANK,yes,yes,Manual behavioral review required
+Edit > Line Operations,Insert Blank Line Above Current,IDM_EDIT_BLANKLINEABOVECURRENT,yes,yes,Manual behavioral review required
+Edit > Line Operations,Insert Blank Line Below Current,IDM_EDIT_BLANKLINEBELOWCURRENT,yes,yes,Manual behavioral review required
+Edit > Line Operations,Reverse Line Order,IDM_EDIT_SORTLINES_REVERSE_ORDER,yes,yes,Manual behavioral review required
+Edit > Line Operations,Randomize Line Order,IDM_EDIT_SORTLINES_RANDOMLY,yes,yes,Manual behavioral review required
+Edit > Line Operations,Sort Lines Lexicographically Ascending,IDM_EDIT_SORTLINES_LEXICOGRAPHIC_ASCENDING,yes,yes,Manual behavioral review required
+Edit > Line Operations,Sort Lines Lex. Ascending Ignoring Case,IDM_EDIT_SORTLINES_LEXICO_CASE_INSENS_ASCENDING,yes,yes,Manual behavioral review required
+Edit > Line Operations,Sort Lines In Locale Order Ascending,IDM_EDIT_SORTLINES_LOCALE_ASCENDING,yes,yes,Manual behavioral review required
+Edit > Line Operations,Sort Lines As Integers Ascending,IDM_EDIT_SORTLINES_INTEGER_ASCENDING,yes,yes,Manual behavioral review required
+Edit > Line Operations,Sort Lines As Decimals (Comma) Ascending,IDM_EDIT_SORTLINES_DECIMALCOMMA_ASCENDING,yes,yes,Manual behavioral review required
+Edit > Line Operations,Sort Lines As Decimals (Dot) Ascending,IDM_EDIT_SORTLINES_DECIMALDOT_ASCENDING,yes,yes,Manual behavioral review required
+Edit > Line Operations,Sort Lines By Length Ascending,IDM_EDIT_SORTLINES_LENGTH_ASCENDING,yes,yes,Manual behavioral review required
+Edit > Line Operations,Sort Lines Lexicographically Descending,IDM_EDIT_SORTLINES_LEXICOGRAPHIC_DESCENDING,yes,yes,Manual behavioral review required
+Edit > Line Operations,Sort Lines Lex. Descending Ignoring Case,IDM_EDIT_SORTLINES_LEXICO_CASE_INSENS_DESCENDING,yes,yes,Manual behavioral review required
+Edit > Line Operations,Sort Lines In Locale Order Descending,IDM_EDIT_SORTLINES_LOCALE_DESCENDING,yes,yes,Manual behavioral review required
+Edit > Line Operations,Sort Lines As Integers Descending,IDM_EDIT_SORTLINES_INTEGER_DESCENDING,yes,yes,Manual behavioral review required
+Edit > Line Operations,Sort Lines As Decimals (Comma) Descending,IDM_EDIT_SORTLINES_DECIMALCOMMA_DESCENDING,yes,yes,Manual behavioral review required
+Edit > Line Operations,Sort Lines As Decimals (Dot) Descending,IDM_EDIT_SORTLINES_DECIMALDOT_DESCENDING,yes,yes,Manual behavioral review required
+Edit > Line Operations,Sort Lines By Length Descending,IDM_EDIT_SORTLINES_LENGTH_DESCENDING,yes,yes,Manual behavioral review required
+Edit > Comment/Uncomment,Toggle Single Line Comment,IDM_EDIT_BLOCK_COMMENT,yes,yes,Manual behavioral review required
+Edit > Comment/Uncomment,Single Line Comment,IDM_EDIT_BLOCK_COMMENT_SET,yes,yes,Manual behavioral review required
+Edit > Comment/Uncomment,Single Line Uncomment,IDM_EDIT_BLOCK_UNCOMMENT,yes,yes,Manual behavioral review required
+Edit > Comment/Uncomment,Block Comment,IDM_EDIT_STREAM_COMMENT,yes,yes,Manual behavioral review required
+Edit > Comment/Uncomment,Block Uncomment,IDM_EDIT_STREAM_UNCOMMENT,yes,yes,Manual behavioral review required
+Edit > Auto-Completion,Function Completion,IDM_EDIT_AUTOCOMPLETE,yes,yes,Manual behavioral review required
+Edit > Auto-Completion,Word Completion,IDM_EDIT_AUTOCOMPLETE_CURRENTFILE,yes,yes,Manual behavioral review required
+Edit > Auto-Completion,Function Parameters Hint,IDM_EDIT_FUNCCALLTIP,no,no,Manual behavioral review required
+Edit > Auto-Completion,Function Parameters Previous Hint,IDM_EDIT_FUNCCALLTIP_PREVIOUS,no,no,Manual behavioral review required
+Edit > Auto-Completion,Function Parameters Next Hint,IDM_EDIT_FUNCCALLTIP_NEXT,no,no,Manual behavioral review required
+Edit > Auto-Completion,Path Completion,IDM_EDIT_AUTOCOMPLETE_PATH,no,no,Manual behavioral review required
+Edit > EOL Conversion,Windows (CR LF),IDM_FORMAT_TODOS,yes,yes,Manual behavioral review required
+Edit > EOL Conversion,Unix (LF),IDM_FORMAT_TOUNIX,yes,yes,Manual behavioral review required
+Edit > EOL Conversion,Macintosh (CR),IDM_FORMAT_TOMAC,yes,yes,Manual behavioral review required
+Edit > Blank Operations,Trim Trailing Space,IDM_EDIT_TRIMTRAILING,yes,yes,Manual behavioral review required
+Edit > Blank Operations,Trim Leading Space,IDM_EDIT_TRIMLINEHEAD,yes,yes,Manual behavioral review required
+Edit > Blank Operations,Trim Leading and Trailing Space,IDM_EDIT_TRIM_BOTH,yes,yes,Manual behavioral review required
+Edit > Blank Operations,EOL to Space,IDM_EDIT_EOL2WS,yes,yes,Manual behavioral review required
+Edit > Blank Operations,Trim both and EOL to Space,IDM_EDIT_TRIMALL,yes,yes,Manual behavioral review required
+Edit > Blank Operations,TAB to Space,IDM_EDIT_TAB2SW,yes,yes,Manual behavioral review required
+Edit > Blank Operations,Space to TAB (All),IDM_EDIT_SW2TAB_ALL,yes,yes,Manual behavioral review required
+Edit > Blank Operations,Space to TAB (Leading),IDM_EDIT_SW2TAB_LEADING,yes,yes,Manual behavioral review required
+Edit > Paste Special,Paste HTML Content,IDM_EDIT_PASTE_AS_HTML,yes,yes,Manual behavioral review required
+Edit > Paste Special,Paste RTF Content,IDM_EDIT_PASTE_AS_RTF,yes,yes,Manual behavioral review required
+Edit > Paste Special,Copy Binary Content,IDM_EDIT_COPY_BINARY,no,no,Manual behavioral review required
+Edit > Paste Special,Cut Binary Content,IDM_EDIT_CUT_BINARY,no,no,Manual behavioral review required
+Edit > Paste Special,Paste Binary Content,IDM_EDIT_PASTE_BINARY,no,no,Manual behavioral review required
+Edit > On Selection,Open File,IDM_EDIT_OPENSELECTEDFILETOEDIT,yes,yes,Manual behavioral review required
+Edit > On Selection,Open Containing Folder in Explorer,IDM_EDIT_OPENSELECTEDFILEFOLDERINEXPLORER,yes,yes,Manual behavioral review required
+Edit > On Selection,Redact Selection █ (Shift: ●),IDM_EDIT_REDACT_SELECTION,yes,yes,Manual behavioral review required
+Edit > On Selection,Search on Internet,IDM_EDIT_SEARCHONINTERNET,no,no,Manual behavioral review required
+Edit > On Selection,Change Search Engine...,IDM_EDIT_CHANGESEARCHENGINE,no,no,Manual behavioral review required
+Edit > Multi-select All,Ignore Case  Whole Word,IDM_EDIT_MULTISELECTALL,no,no,Manual behavioral review required
+Edit > Multi-select All,Match Case Only,IDM_EDIT_MULTISELECTALLMATCHCASE,no,no,Manual behavioral review required
+Edit > Multi-select All,Match Whole Word Only,IDM_EDIT_MULTISELECTALLWHOLEWORD,no,no,Manual behavioral review required
+Edit > Multi-select All,Match Case  Whole Word,IDM_EDIT_MULTISELECTALLMATCHCASEWHOLEWORD,no,no,Manual behavioral review required
+Edit > Multi-select Next,Ignore Case  Whole Word,IDM_EDIT_MULTISELECTNEXT,no,no,Manual behavioral review required
+Edit > Multi-select Next,Match Case Only,IDM_EDIT_MULTISELECTNEXTMATCHCASE,no,no,Manual behavioral review required
+Edit > Multi-select Next,Match Whole Word Only,IDM_EDIT_MULTISELECTNEXTWHOLEWORD,no,no,Manual behavioral review required
+Edit > Multi-select Next,Match Case  Whole Word,IDM_EDIT_MULTISELECTNEXTMATCHCASEWHOLEWORD,no,no,Manual behavioral review required
+Edit,Undo the Latest Added Multi-Select,IDM_EDIT_MULTISELECTUNDO,no,no,Manual behavioral review required
+Edit,Skip Current  Go to Next Multi-select,IDM_EDIT_MULTISELECTSSKIP,no,no,Manual behavioral review required
+Edit,Column Mode...,IDM_EDIT_COLUMNMODETIP,no,no,Manual behavioral review required
+Edit,Column Editor...,IDM_EDIT_COLUMNMODE,no,no,Manual behavioral review required
+Edit,Character Panel,IDM_EDIT_CHAR_PANEL,no,no,Manual behavioral review required
+Edit,Clipboard History,IDM_EDIT_CLIPBOARDHISTORY_PANEL,no,no,Manual behavioral review required
+Edit > Read-Only in Notepad++,Read-Only on Current Document,IDM_EDIT_TOGGLEREADONLY,yes,yes,Manual behavioral review required
+Edit > Read-Only in Notepad++,Read-Only for All Documents,IDM_EDIT_SETREADONLYFORALLDOCS,yes,yes,Manual behavioral review required
+Edit > Read-Only in Notepad++,Clear Read-Only for All Documents,IDM_EDIT_CLEARREADONLYFORALLDOCS,yes,yes,Manual behavioral review required
+Edit,Read-Only Attribute in Windows,IDM_EDIT_TOGGLESYSTEMREADONLY,yes,yes,Manual behavioral review required
+Search,Find...,IDM_SEARCH_FIND,yes,yes,Manual behavioral review required
+Search,Find in Files...,IDM_SEARCH_FINDINFILES,yes,yes,Manual behavioral review required
+Search,Find Next,IDM_SEARCH_FINDNEXT,yes,yes,Manual behavioral review required
+Search,Find Previous,IDM_SEARCH_FINDPREV,yes,yes,Manual behavioral review required
+Search,Select and Find Next,IDM_SEARCH_SETANDFINDNEXT,yes,yes,Manual behavioral review required
+Search,Select and Find Previous,IDM_SEARCH_SETANDFINDPREV,yes,yes,Manual behavioral review required
+Search,Find (Volatile) Next,IDM_SEARCH_VOLATILE_FINDNEXT,yes,yes,Manual behavioral review required
+Search,Find (Volatile) Previous,IDM_SEARCH_VOLATILE_FINDPREV,yes,yes,Manual behavioral review required
+Search,Replace...,IDM_SEARCH_REPLACE,yes,yes,Manual behavioral review required
+Search,Incremental Search,IDM_SEARCH_FINDINCREMENT,no,no,Manual behavioral review required
+Search,Search Results Window,IDM_FOCUS_ON_FOUND_RESULTS,yes,yes,Manual behavioral review required
+Search,Next Search Result,IDM_SEARCH_GOTONEXTFOUND,yes,yes,Manual behavioral review required
+Search,Previous Search Result,IDM_SEARCH_GOTOPREVFOUND,yes,yes,Manual behavioral review required
+Search,Go to...,IDM_SEARCH_GOTOLINE,yes,yes,Manual behavioral review required
+Search,Go to Matching Brace,IDM_SEARCH_GOTOMATCHINGBRACE,yes,yes,Manual behavioral review required
+Search,Select All In-between {} [] or (),IDM_SEARCH_SELECTMATCHINGBRACES,yes,yes,Manual behavioral review required
+Search,Mark...,IDM_SEARCH_MARK,no,no,Manual behavioral review required
+Search > Change History,Go to Next Change,IDM_SEARCH_CHANGED_NEXT,no,no,Manual behavioral review required
+Search > Change History,Go to Previous Change,IDM_SEARCH_CHANGED_PREV,no,no,Manual behavioral review required
+Search > Change History,Clear Change History,IDM_SEARCH_CLEAR_CHANGE_HISTORY,no,no,Manual behavioral review required
+Search > Style All Occurrences of Token,Using 1st Style,IDM_SEARCH_MARKALLEXT1,no,no,Manual behavioral review required
+Search > Style All Occurrences of Token,Using 2nd Style,IDM_SEARCH_MARKALLEXT2,no,no,Manual behavioral review required
+Search > Style All Occurrences of Token,Using 3rd Style,IDM_SEARCH_MARKALLEXT3,no,no,Manual behavioral review required
+Search > Style All Occurrences of Token,Using 4th Style,IDM_SEARCH_MARKALLEXT4,no,no,Manual behavioral review required
+Search > Style All Occurrences of Token,Using 5th Style,IDM_SEARCH_MARKALLEXT5,no,no,Manual behavioral review required
+Search > Style One Token,Using 1st Style,IDM_SEARCH_MARKONEEXT1,no,no,Manual behavioral review required
+Search > Style One Token,Using 2nd Style,IDM_SEARCH_MARKONEEXT2,no,no,Manual behavioral review required
+Search > Style One Token,Using 3rd Style,IDM_SEARCH_MARKONEEXT3,no,no,Manual behavioral review required
+Search > Style One Token,Using 4th Style,IDM_SEARCH_MARKONEEXT4,no,no,Manual behavioral review required
+Search > Style One Token,Using 5th Style,IDM_SEARCH_MARKONEEXT5,no,no,Manual behavioral review required
+Search > Clear Style,Clear 1st Style,IDM_SEARCH_UNMARKALLEXT1,no,no,Manual behavioral review required
+Search > Clear Style,Clear 2nd Style,IDM_SEARCH_UNMARKALLEXT2,no,no,Manual behavioral review required
+Search > Clear Style,Clear 3rd Style,IDM_SEARCH_UNMARKALLEXT3,no,no,Manual behavioral review required
+Search > Clear Style,Clear 4th Style,IDM_SEARCH_UNMARKALLEXT4,no,no,Manual behavioral review required
+Search > Clear Style,Clear 5th Style,IDM_SEARCH_UNMARKALLEXT5,no,no,Manual behavioral review required
+Search > Clear Style,Clear all Styles,IDM_SEARCH_CLEARALLMARKS,no,no,Manual behavioral review required
+Search > Jump Up,1st Style,IDM_SEARCH_GOPREVMARKER1,no,no,Manual behavioral review required
+Search > Jump Up,2nd Style,IDM_SEARCH_GOPREVMARKER2,no,no,Manual behavioral review required
+Search > Jump Up,3rd Style,IDM_SEARCH_GOPREVMARKER3,no,no,Manual behavioral review required
+Search > Jump Up,4th Style,IDM_SEARCH_GOPREVMARKER4,no,no,Manual behavioral review required
+Search > Jump Up,5th Style,IDM_SEARCH_GOPREVMARKER5,no,no,Manual behavioral review required
+Search > Jump Up,Find Mark Style,IDM_SEARCH_GOPREVMARKER_DEF,no,no,Manual behavioral review required
+Search > Jump Down,1st Style,IDM_SEARCH_GONEXTMARKER1,no,no,Manual behavioral review required
+Search > Jump Down,2nd Style,IDM_SEARCH_GONEXTMARKER2,no,no,Manual behavioral review required
+Search > Jump Down,3rd Style,IDM_SEARCH_GONEXTMARKER3,no,no,Manual behavioral review required
+Search > Jump Down,4th Style,IDM_SEARCH_GONEXTMARKER4,no,no,Manual behavioral review required
+Search > Jump Down,5th Style,IDM_SEARCH_GONEXTMARKER5,no,no,Manual behavioral review required
+Search > Jump Down,Find Mark Style,IDM_SEARCH_GONEXTMARKER_DEF,no,no,Manual behavioral review required
+Search > Copy Styled Text,1st Style,IDM_SEARCH_STYLE1TOCLIP,no,no,Manual behavioral review required
+Search > Copy Styled Text,2nd Style,IDM_SEARCH_STYLE2TOCLIP,no,no,Manual behavioral review required
+Search > Copy Styled Text,3rd Style,IDM_SEARCH_STYLE3TOCLIP,no,no,Manual behavioral review required
+Search > Copy Styled Text,4th Style,IDM_SEARCH_STYLE4TOCLIP,no,no,Manual behavioral review required
+Search > Copy Styled Text,5th Style,IDM_SEARCH_STYLE5TOCLIP,no,no,Manual behavioral review required
+Search > Copy Styled Text,All Styles,IDM_SEARCH_ALLSTYLESTOCLIP,no,no,Manual behavioral review required
+Search > Copy Styled Text,Find Mark Style,IDM_SEARCH_MARKEDTOCLIP,no,no,Manual behavioral review required
+Search > Bookmark,Toggle Bookmark,IDM_SEARCH_TOGGLE_BOOKMARK,yes,yes,Manual behavioral review required
+Search > Bookmark,Next Bookmark,IDM_SEARCH_NEXT_BOOKMARK,yes,yes,Manual behavioral review required
+Search > Bookmark,Previous Bookmark,IDM_SEARCH_PREV_BOOKMARK,yes,yes,Manual behavioral review required
+Search > Bookmark,Clear All Bookmarks,IDM_SEARCH_CLEAR_BOOKMARKS,yes,yes,Manual behavioral review required
+Search > Bookmark,Cut Bookmarked Lines,IDM_SEARCH_CUTMARKEDLINES,yes,yes,Manual behavioral review required
+Search > Bookmark,Copy Bookmarked Lines,IDM_SEARCH_COPYMARKEDLINES,yes,yes,Manual behavioral review required
+Search > Bookmark,Paste to (Replace) Bookmarked Lines,IDM_SEARCH_PASTEMARKEDLINES,yes,yes,Manual behavioral review required
+Search > Bookmark,Remove Bookmarked Lines,IDM_SEARCH_DELETEMARKEDLINES,yes,yes,Manual behavioral review required
+Search > Bookmark,Remove Non-Bookmarked Lines,IDM_SEARCH_DELETEUNMARKEDLINES,yes,yes,Manual behavioral review required
+Search > Bookmark,Inverse Bookmarks,IDM_SEARCH_INVERSEMARKS,yes,yes,Manual behavioral review required
+Search,Find characters in range...,IDM_SEARCH_FINDCHARINRANGE,no,no,Manual behavioral review required
+View,Always on Top,IDM_VIEW_ALWAYSONTOP,yes,yes,Manual behavioral review required
+View,Toggle Full Screen Mode,IDM_VIEW_FULLSCREENTOGGLE,yes,yes,Manual behavioral review required
+View,Post-It,IDM_VIEW_POSTIT,no,no,Manual behavioral review required
+View,Distraction Free Mode,IDM_VIEW_DISTRACTIONFREE,no,no,Manual behavioral review required
+View > View Current File in,Firefox,IDM_VIEW_IN_FIREFOX,no,no,Manual behavioral review required
+View > View Current File in,Chrome,IDM_VIEW_IN_CHROME,no,no,Manual behavioral review required
+View > View Current File in,Edge,IDM_VIEW_IN_EDGE,no,no,Manual behavioral review required
+View > View Current File in,IE,IDM_VIEW_IN_IE,no,no,Manual behavioral review required
+View > Show Symbol,Show Space and Tab,IDM_VIEW_TAB_SPACE,no,no,Manual behavioral review required
+View > Show Symbol,Show End of Line,IDM_VIEW_EOL,no,no,Manual behavioral review required
+View > Show Symbol,Show Non-Printing Characters,IDM_VIEW_NPC,no,no,Manual behavioral review required
+View > Show Symbol,Show Control Characters  Unicode EOL,IDM_VIEW_NPC_CCUNIEOL,no,no,Manual behavioral review required
+View > Show Symbol,Show All Characters,IDM_VIEW_ALL_CHARACTERS,no,no,Manual behavioral review required
+View > Show Symbol,Show Indent Guide,IDM_VIEW_INDENT_GUIDE,no,no,Manual behavioral review required
+View > Show Symbol,Show Wrap Symbol,IDM_VIEW_WRAP_SYMBOL,no,no,Manual behavioral review required
+View > Zoom,Zoom In (Ctrl+Mouse Wheel Up),IDM_VIEW_ZOOMIN,yes,yes,Manual behavioral review required
+View > Zoom,Zoom Out (Ctrl+Mouse Wheel Down),IDM_VIEW_ZOOMOUT,yes,yes,Manual behavioral review required
+View > Zoom,Restore Default Zoom,IDM_VIEW_ZOOMRESTORE,yes,yes,Manual behavioral review required
+View > Zoom,Synchronize Across Views,IDM_VIEW_ZOOM_SYNC,no,no,Manual behavioral review required
+View > Move/Clone Current Document,Move to Other View,IDM_VIEW_GOTO_ANOTHER_VIEW,no,no,Manual behavioral review required
+View > Move/Clone Current Document,Clone to Other View,IDM_VIEW_CLONE_TO_ANOTHER_VIEW,no,no,Manual behavioral review required
+View > Move/Clone Current Document,Move to New Instance,IDM_VIEW_GOTO_NEW_INSTANCE,no,no,Manual behavioral review required
+View > Move/Clone Current Document,Open in New Instance,IDM_VIEW_LOAD_IN_NEW_INSTANCE,no,no,Manual behavioral review required
+View > Tab,1st Tab,IDM_VIEW_TAB1,no,yes,Manual behavioral review required
+View > Tab,2nd Tab,IDM_VIEW_TAB2,no,no,Manual behavioral review required
+View > Tab,3rd Tab,IDM_VIEW_TAB3,no,no,Manual behavioral review required
+View > Tab,4th Tab,IDM_VIEW_TAB4,no,no,Manual behavioral review required
+View > Tab,5th Tab,IDM_VIEW_TAB5,no,no,Manual behavioral review required
+View > Tab,6th Tab,IDM_VIEW_TAB6,no,no,Manual behavioral review required
+View > Tab,7th Tab,IDM_VIEW_TAB7,no,no,Manual behavioral review required
+View > Tab,8th Tab,IDM_VIEW_TAB8,no,no,Manual behavioral review required
+View > Tab,9th Tab,IDM_VIEW_TAB9,no,yes,Manual behavioral review required
+View > Tab,First Tab,IDM_VIEW_TAB_START,yes,yes,Manual behavioral review required
+View > Tab,Last Tab,IDM_VIEW_TAB_END,yes,yes,Manual behavioral review required
+View > Tab,Next Tab,IDM_VIEW_TAB_NEXT,yes,yes,Manual behavioral review required
+View > Tab,Previous Tab,IDM_VIEW_TAB_PREV,yes,yes,Manual behavioral review required
+View > Tab,Move to Start,IDM_VIEW_GOTO_START,no,no,Manual behavioral review required
+View > Tab,Move to End,IDM_VIEW_GOTO_END,no,no,Manual behavioral review required
+View > Tab,Move Tab Forward,IDM_VIEW_TAB_MOVEFORWARD,yes,yes,Manual behavioral review required
+View > Tab,Move Tab Backward,IDM_VIEW_TAB_MOVEBACKWARD,yes,yes,Manual behavioral review required
+View > Tab,Apply Color 1,IDM_VIEW_TAB_COLOUR_1,no,no,Manual behavioral review required
+View > Tab,Apply Color 2,IDM_VIEW_TAB_COLOUR_2,no,no,Manual behavioral review required
+View > Tab,Apply Color 3,IDM_VIEW_TAB_COLOUR_3,no,no,Manual behavioral review required
+View > Tab,Apply Color 4,IDM_VIEW_TAB_COLOUR_4,no,no,Manual behavioral review required
+View > Tab,Apply Color 5,IDM_VIEW_TAB_COLOUR_5,no,no,Manual behavioral review required
+View > Tab,Remove Color,IDM_VIEW_TAB_COLOUR_NONE,no,no,Manual behavioral review required
+View,Word wrap,IDM_VIEW_WRAP,yes,yes,Manual behavioral review required
+View,Focus on Another View,IDM_VIEW_SWITCHTO_OTHER_VIEW,no,no,Manual behavioral review required
+View,Hide Lines,IDM_VIEW_HIDELINES,no,no,Manual behavioral review required
+View,Fold All,IDM_VIEW_FOLDALL,yes,yes,Manual behavioral review required
+View,Unfold All,IDM_VIEW_UNFOLDALL,yes,yes,Manual behavioral review required
+View,Fold Current Level,IDM_VIEW_FOLD_CURRENT,yes,yes,Manual behavioral review required
+View,Unfold Current Level,IDM_VIEW_UNFOLD_CURRENT,yes,yes,Manual behavioral review required
+View > Fold Level,1,IDM_VIEW_FOLD_1,yes,yes,Manual behavioral review required
+View > Fold Level,2,IDM_VIEW_FOLD_2,yes,no,Manual behavioral review required
+View > Fold Level,3,IDM_VIEW_FOLD_3,yes,no,Manual behavioral review required
+View > Fold Level,4,IDM_VIEW_FOLD_4,yes,no,Manual behavioral review required
+View > Fold Level,5,IDM_VIEW_FOLD_5,yes,no,Manual behavioral review required
+View > Fold Level,6,IDM_VIEW_FOLD_6,yes,no,Manual behavioral review required
+View > Fold Level,7,IDM_VIEW_FOLD_7,yes,no,Manual behavioral review required
+View > Fold Level,8,IDM_VIEW_FOLD_8,yes,yes,Manual behavioral review required
+View > Unfold Level,1,IDM_VIEW_UNFOLD_1,yes,yes,Manual behavioral review required
+View > Unfold Level,2,IDM_VIEW_UNFOLD_2,yes,no,Manual behavioral review required
+View > Unfold Level,3,IDM_VIEW_UNFOLD_3,yes,no,Manual behavioral review required
+View > Unfold Level,4,IDM_VIEW_UNFOLD_4,yes,no,Manual behavioral review required
+View > Unfold Level,5,IDM_VIEW_UNFOLD_5,yes,no,Manual behavioral review required
+View > Unfold Level,6,IDM_VIEW_UNFOLD_6,yes,no,Manual behavioral review required
+View > Unfold Level,7,IDM_VIEW_UNFOLD_7,yes,no,Manual behavioral review required
+View > Unfold Level,8,IDM_VIEW_UNFOLD_8,yes,yes,Manual behavioral review required
+View,Summary...,IDM_VIEW_SUMMARY,yes,yes,Manual behavioral review required
+View > Project Panels,Project Panel 1,IDM_VIEW_PROJECT_PANEL_1,no,no,Manual behavioral review required
+View > Project Panels,Project Panel 2,IDM_VIEW_PROJECT_PANEL_2,no,no,Manual behavioral review required
+View > Project Panels,Project Panel 3,IDM_VIEW_PROJECT_PANEL_3,no,no,Manual behavioral review required
+View,Folder as Workspace,IDM_VIEW_FILEBROWSER,no,no,Manual behavioral review required
+View,Document Map,IDM_VIEW_DOC_MAP,no,no,Manual behavioral review required
+View,Document List,IDM_VIEW_DOCLIST,no,no,Manual behavioral review required
+View,Function List,IDM_VIEW_FUNC_LIST,no,no,Manual behavioral review required
+View,Synchronize Vertical Scrolling,IDM_VIEW_SYNSCROLLV,no,no,Manual behavioral review required
+View,Synchronize Horizontal Scrolling,IDM_VIEW_SYNSCROLLH,no,no,Manual behavioral review required
+View,Text Direction RTL,IDM_EDIT_RTL,no,no,Manual behavioral review required
+View,Text Direction LTR,IDM_EDIT_LTR,no,no,Manual behavioral review required
+View,Monitoring (tail -f),IDM_VIEW_MONITORING,no,no,Manual behavioral review required
+Encoding,ANSI,IDM_FORMAT_ANSI,no,no,Manual behavioral review required
+Encoding,UTF-8,IDM_FORMAT_AS_UTF_8,no,no,Manual behavioral review required
+Encoding,UTF-8-BOM,IDM_FORMAT_UTF_8,no,no,Manual behavioral review required
+Encoding,UTF-16 BE BOM,IDM_FORMAT_UTF_16BE,no,no,Manual behavioral review required
+Encoding,UTF-16 LE BOM,IDM_FORMAT_UTF_16LE,no,no,Manual behavioral review required
+Encoding > Character sets > Arabic,ISO 8859-6,IDM_FORMAT_ISO_8859_6,no,no,Manual behavioral review required
+Encoding > Character sets > Arabic,OEM 720,IDM_FORMAT_DOS_720,no,no,Manual behavioral review required
+Encoding > Character sets > Arabic,Windows-1256,IDM_FORMAT_WIN_1256,no,no,Manual behavioral review required
+Encoding > Character sets > Baltic,ISO 8859-4,IDM_FORMAT_ISO_8859_4,no,no,Manual behavioral review required
+Encoding > Character sets > Baltic,ISO 8859-13,IDM_FORMAT_ISO_8859_13,no,no,Manual behavioral review required
+Encoding > Character sets > Baltic,OEM 775,IDM_FORMAT_DOS_775,no,no,Manual behavioral review required
+Encoding > Character sets > Baltic,Windows-1257,IDM_FORMAT_WIN_1257,no,no,Manual behavioral review required
+Encoding > Character sets > Celtic,ISO 8859-14,IDM_FORMAT_ISO_8859_14,no,no,Manual behavioral review required
+Encoding > Character sets > Cyrillic,ISO 8859-5,IDM_FORMAT_ISO_8859_5,no,no,Manual behavioral review required
+Encoding > Character sets > Cyrillic,KOI8-R,IDM_FORMAT_KOI8R_CYRILLIC,no,no,Manual behavioral review required
+Encoding > Character sets > Cyrillic,KOI8-U,IDM_FORMAT_KOI8U_CYRILLIC,no,no,Manual behavioral review required
+Encoding > Character sets > Cyrillic,Macintosh,IDM_FORMAT_MAC_CYRILLIC,no,no,Manual behavioral review required
+Encoding > Character sets > Cyrillic,OEM 855,IDM_FORMAT_DOS_855,no,no,Manual behavioral review required
+Encoding > Character sets > Cyrillic,OEM 866,IDM_FORMAT_DOS_866,no,no,Manual behavioral review required
+Encoding > Character sets > Cyrillic,Windows-1251,IDM_FORMAT_WIN_1251,no,no,Manual behavioral review required
+Encoding > Character sets > Central European,OEM 852,IDM_FORMAT_DOS_852,no,no,Manual behavioral review required
+Encoding > Character sets > Central European,Windows-1250,IDM_FORMAT_WIN_1250,no,no,Manual behavioral review required
+Encoding > Character sets > Chinese,Big5 (Traditional),IDM_FORMAT_BIG5,no,no,Manual behavioral review required
+Encoding > Character sets > Chinese,GB2312 (Simplified),IDM_FORMAT_GB2312,no,no,Manual behavioral review required
+Encoding > Character sets > Eastern European,ISO 8859-2,IDM_FORMAT_ISO_8859_2,no,no,Manual behavioral review required
+Encoding > Character sets > Greek,ISO 8859-7,IDM_FORMAT_ISO_8859_7,no,no,Manual behavioral review required
+Encoding > Character sets > Greek,OEM 737,IDM_FORMAT_DOS_737,no,no,Manual behavioral review required
+Encoding > Character sets > Greek,OEM 869,IDM_FORMAT_DOS_869,no,no,Manual behavioral review required
+Encoding > Character sets > Greek,Windows-1253,IDM_FORMAT_WIN_1253,no,no,Manual behavioral review required
+Encoding > Character sets > Hebrew,ISO 8859-8,IDM_FORMAT_ISO_8859_8,no,no,Manual behavioral review required
+Encoding > Character sets > Hebrew,OEM 862,IDM_FORMAT_DOS_862,no,no,Manual behavioral review required
+Encoding > Character sets > Hebrew,Windows-1255,IDM_FORMAT_WIN_1255,no,no,Manual behavioral review required
+Encoding > Character sets > Japanese,Shift-JIS,IDM_FORMAT_SHIFT_JIS,no,no,Manual behavioral review required
+Encoding > Character sets > Korean,Windows 949,IDM_FORMAT_KOREAN_WIN,no,no,Manual behavioral review required
+Encoding > Character sets > Korean,EUC-KR,IDM_FORMAT_EUC_KR,no,no,Manual behavioral review required
+Encoding > Character sets > North European,OEM 861 : Icelandic,IDM_FORMAT_DOS_861,no,no,Manual behavioral review required
+Encoding > Character sets > North European,OEM 865 : Nordic,IDM_FORMAT_DOS_865,no,no,Manual behavioral review required
+Encoding > Character sets > Thai,TIS-620,IDM_FORMAT_TIS_620,no,no,Manual behavioral review required
+Encoding > Character sets > Turkish,ISO 8859-3,IDM_FORMAT_ISO_8859_3,no,no,Manual behavioral review required
+Encoding > Character sets > Turkish,ISO 8859-9,IDM_FORMAT_ISO_8859_9,no,no,Manual behavioral review required
+Encoding > Character sets > Turkish,OEM 857,IDM_FORMAT_DOS_857,no,no,Manual behavioral review required
+Encoding > Character sets > Turkish,Windows-1254,IDM_FORMAT_WIN_1254,no,no,Manual behavioral review required
+Encoding > Character sets > Western European,ISO 8859-1,IDM_FORMAT_ISO_8859_1,no,no,Manual behavioral review required
+Encoding > Character sets > Western European,ISO 8859-15,IDM_FORMAT_ISO_8859_15,no,no,Manual behavioral review required
+Encoding > Character sets > Western European,OEM 850,IDM_FORMAT_DOS_850,no,no,Manual behavioral review required
+Encoding > Character sets > Western European,OEM 858,IDM_FORMAT_DOS_858,no,no,Manual behavioral review required
+Encoding > Character sets > Western European,OEM 860 : Portuguese,IDM_FORMAT_DOS_860,no,no,Manual behavioral review required
+Encoding > Character sets > Western European,OEM 863 : French,IDM_FORMAT_DOS_863,no,no,Manual behavioral review required
+Encoding > Character sets > Western European,OEM-US : CP437,IDM_FORMAT_DOS_437,no,no,Manual behavioral review required
+Encoding > Character sets > Western European,Windows-1252,IDM_FORMAT_WIN_1252,no,no,Manual behavioral review required
+Encoding > Character sets > Vietnamese,Windows-1258,IDM_FORMAT_WIN_1258,no,no,Manual behavioral review required
+Encoding,Convert to ANSI,IDM_FORMAT_CONV2_ANSI,no,no,Manual behavioral review required
+Encoding,Convert to UTF-8,IDM_FORMAT_CONV2_AS_UTF_8,yes,yes,Manual behavioral review required
+Encoding,Convert to UTF-8-BOM,IDM_FORMAT_CONV2_UTF_8,yes,yes,Manual behavioral review required
+Encoding,Convert to UTF-16 BE BOM,IDM_FORMAT_CONV2_UTF_16BE,yes,yes,Manual behavioral review required
+Encoding,Convert to UTF-16 LE BOM,IDM_FORMAT_CONV2_UTF_16LE,yes,yes,Manual behavioral review required
+Language,None (Normal Text),IDM_LANG_TEXT,yes,yes,"Built-in lexer, syntax styles, folding, comments and completion; custom UDL styling pending"
+Language,ActionScript,IDM_LANG_FLASH,yes,yes,"Built-in lexer, syntax styles, folding, comments and completion; custom UDL styling pending"
+Language,Ada,IDM_LANG_ADA,yes,yes,"Built-in lexer, syntax styles, folding, comments and completion; custom UDL styling pending"
+Language,ASN.1,IDM_LANG_ASN1,yes,yes,"Built-in lexer, syntax styles, folding, comments and completion; custom UDL styling pending"
+Language,ASP,IDM_LANG_ASP,yes,yes,"Built-in lexer, syntax styles, folding, comments and completion; custom UDL styling pending"
+Language,Assembly,IDM_LANG_ASM,yes,yes,"Built-in lexer, syntax styles, folding, comments and completion; custom UDL styling pending"
+Language,AutoIt,IDM_LANG_AU3,yes,yes,"Built-in lexer, syntax styles, folding, comments and completion; custom UDL styling pending"
+Language,AviSynth,IDM_LANG_AVS,yes,yes,"Built-in lexer, syntax styles, folding, comments and completion; custom UDL styling pending"
+Language,BaanC,IDM_LANG_BAANC,yes,yes,"Built-in lexer, syntax styles, folding, comments and completion; custom UDL styling pending"
+Language,Batch,IDM_LANG_BATCH,yes,yes,"Built-in lexer, syntax styles, folding, comments and completion; custom UDL styling pending"
+Language,Blitzbasic,IDM_LANG_BLITZBASIC,yes,yes,"Built-in lexer, syntax styles, folding, comments and completion; custom UDL styling pending"
+Language,C,IDM_LANG_C,yes,yes,"Built-in lexer, syntax styles, folding, comments and completion; custom UDL styling pending"
+Language,C#,IDM_LANG_CS,yes,yes,"Built-in lexer, syntax styles, folding, comments and completion; custom UDL styling pending"
+Language,C++,IDM_LANG_CPP,yes,yes,"Built-in lexer, syntax styles, folding, comments and completion; custom UDL styling pending"
+Language,Caml,IDM_LANG_CAML,yes,yes,"Built-in lexer, syntax styles, folding, comments and completion; custom UDL styling pending"
+Language,CMake,IDM_LANG_CMAKE,yes,yes,"Built-in lexer, syntax styles, folding, comments and completion; custom UDL styling pending"
+Language,COBOL,IDM_LANG_COBOL,yes,yes,"Built-in lexer, syntax styles, folding, comments and completion; custom UDL styling pending"
+Language,CSound,IDM_LANG_CSOUND,yes,yes,"Built-in lexer, syntax styles, folding, comments and completion; custom UDL styling pending"
+Language,CoffeeScript,IDM_LANG_COFFEESCRIPT,yes,yes,"Built-in lexer, syntax styles, folding, comments and completion; custom UDL styling pending"
+Language,CSS,IDM_LANG_CSS,yes,yes,"Built-in lexer, syntax styles, folding, comments and completion; custom UDL styling pending"
+Language,D,IDM_LANG_D,yes,yes,"Built-in lexer, syntax styles, folding, comments and completion; custom UDL styling pending"
+Language,Diff,IDM_LANG_DIFF,yes,yes,"Built-in lexer, syntax styles, folding, comments and completion; custom UDL styling pending"
+Language,Erlang,IDM_LANG_ERLANG,yes,yes,"Built-in lexer, syntax styles, folding, comments and completion; custom UDL styling pending"
+Language,ErrorList,IDM_LANG_ERRORLIST,yes,yes,"Built-in lexer, syntax styles, folding, comments and completion; custom UDL styling pending"
+Language,Escape Sequence (ANSI),IDM_LANG_ESCSEQ,yes,yes,"Built-in lexer, syntax styles, folding, comments and completion; custom UDL styling pending"
+Language,ESCRIPT,IDM_LANG_ESCRIPT,yes,yes,"Built-in lexer, syntax styles, folding, comments and completion; custom UDL styling pending"
+Language,Forth,IDM_LANG_FORTH,yes,yes,"Built-in lexer, syntax styles, folding, comments and completion; custom UDL styling pending"
+Language,Fortran (free form),IDM_LANG_FORTRAN,yes,yes,"Built-in lexer, syntax styles, folding, comments and completion; custom UDL styling pending"
+Language,Fortran (fixed form),IDM_LANG_FORTRAN_77,yes,yes,"Built-in lexer, syntax styles, folding, comments and completion; custom UDL styling pending"
+Language,Freebasic,IDM_LANG_FREEBASIC,yes,yes,"Built-in lexer, syntax styles, folding, comments and completion; custom UDL styling pending"
+Language,GDScript,IDM_LANG_GDSCRIPT,yes,yes,"Built-in lexer, syntax styles, folding, comments and completion; custom UDL styling pending"
+Language,Go,IDM_LANG_GOLANG,yes,yes,"Built-in lexer, syntax styles, folding, comments and completion; custom UDL styling pending"
+Language,Gui4Cli,IDM_LANG_GUI4CLI,yes,yes,"Built-in lexer, syntax styles, folding, comments and completion; custom UDL styling pending"
+Language,Haskell,IDM_LANG_HASKELL,yes,yes,"Built-in lexer, syntax styles, folding, comments and completion; custom UDL styling pending"
+Language,Hollywood,IDM_LANG_HOLLYWOOD,yes,yes,"Built-in lexer, syntax styles, folding, comments and completion; custom UDL styling pending"
+Language,HTML,IDM_LANG_HTML,yes,yes,"Built-in lexer, syntax styles, folding, comments and completion; custom UDL styling pending"
+Language,INI file,IDM_LANG_INI,yes,yes,"Built-in lexer, syntax styles, folding, comments and completion; custom UDL styling pending"
+Language,Inno Setup,IDM_LANG_INNO,yes,yes,"Built-in lexer, syntax styles, folding, comments and completion; custom UDL styling pending"
+Language,Intel HEX,IDM_LANG_IHEX,yes,yes,"Built-in lexer, syntax styles, folding, comments and completion; custom UDL styling pending"
+Language,Java,IDM_LANG_JAVA,yes,yes,"Built-in lexer, syntax styles, folding, comments and completion; custom UDL styling pending"
+Language,JavaScript,IDM_LANG_JS,yes,yes,"Built-in lexer, syntax styles, folding, comments and completion; custom UDL styling pending"
+Language,JSON,IDM_LANG_JSON,yes,yes,"Built-in lexer, syntax styles, folding, comments and completion; custom UDL styling pending"
+Language,JSON5,IDM_LANG_JSON5,yes,yes,"Built-in lexer, syntax styles, folding, comments and completion; custom UDL styling pending"
+Language,JSP,IDM_LANG_JSP,yes,yes,"Built-in lexer, syntax styles, folding, comments and completion; custom UDL styling pending"
+Language,KIXtart,IDM_LANG_KIX,yes,yes,"Built-in lexer, syntax styles, folding, comments and completion; custom UDL styling pending"
+Language,LISP,IDM_LANG_LISP,yes,yes,"Built-in lexer, syntax styles, folding, comments and completion; custom UDL styling pending"
+Language,LaTeX,IDM_LANG_LATEX,yes,yes,"Built-in lexer, syntax styles, folding, comments and completion; custom UDL styling pending"
+Language,Lua,IDM_LANG_LUA,yes,yes,"Built-in lexer, syntax styles, folding, comments and completion; custom UDL styling pending"
+Language,Makefile,IDM_LANG_MAKEFILE,yes,yes,"Built-in lexer, syntax styles, folding, comments and completion; custom UDL styling pending"
+Language,Matlab,IDM_LANG_MATLAB,yes,yes,"Built-in lexer, syntax styles, folding, comments and completion; custom UDL styling pending"
+Language,Microsoft Transact-SQL,IDM_LANG_MSSQL,yes,yes,"Built-in lexer, syntax styles, folding, comments and completion; custom UDL styling pending"
+Language,MMIXAL,IDM_LANG_MMIXAL,yes,yes,"Built-in lexer, syntax styles, folding, comments and completion; custom UDL styling pending"
+Language,MS-DOS Style,IDM_LANG_ASCII,yes,yes,"Built-in lexer, syntax styles, folding, comments and completion; custom UDL styling pending"
+Language,Nim,IDM_LANG_NIM,yes,yes,"Built-in lexer, syntax styles, folding, comments and completion; custom UDL styling pending"
+Language,Nncrontab,IDM_LANG_NNCRONTAB,yes,yes,"Built-in lexer, syntax styles, folding, comments and completion; custom UDL styling pending"
+Language,NSIS,IDM_LANG_NSIS,yes,yes,"Built-in lexer, syntax styles, folding, comments and completion; custom UDL styling pending"
+Language,Objective-C,IDM_LANG_OBJC,yes,yes,"Built-in lexer, syntax styles, folding, comments and completion; custom UDL styling pending"
+Language,OScript,IDM_LANG_OSCRIPT,yes,yes,"Built-in lexer, syntax styles, folding, comments and completion; custom UDL styling pending"
+Language,Pascal,IDM_LANG_PASCAL,yes,yes,"Built-in lexer, syntax styles, folding, comments and completion; custom UDL styling pending"
+Language,Perl,IDM_LANG_PERL,yes,yes,"Built-in lexer, syntax styles, folding, comments and completion; custom UDL styling pending"
+Language,PHP,IDM_LANG_PHP,yes,yes,"Built-in lexer, syntax styles, folding, comments and completion; custom UDL styling pending"
+Language,PostScript,IDM_LANG_PS,yes,yes,"Built-in lexer, syntax styles, folding, comments and completion; custom UDL styling pending"
+Language,PowerShell,IDM_LANG_POWERSHELL,yes,yes,"Built-in lexer, syntax styles, folding, comments and completion; custom UDL styling pending"
+Language,Properties,IDM_LANG_PROPS,yes,yes,"Built-in lexer, syntax styles, folding, comments and completion; custom UDL styling pending"
+Language,Purebasic,IDM_LANG_PUREBASIC,yes,yes,"Built-in lexer, syntax styles, folding, comments and completion; custom UDL styling pending"
+Language,Python,IDM_LANG_PYTHON,yes,yes,"Built-in lexer, syntax styles, folding, comments and completion; custom UDL styling pending"
+Language,R,IDM_LANG_R,yes,yes,"Built-in lexer, syntax styles, folding, comments and completion; custom UDL styling pending"
+Language,Raku,IDM_LANG_RAKU,yes,yes,"Built-in lexer, syntax styles, folding, comments and completion; custom UDL styling pending"
+Language,REBOL,IDM_LANG_REBOL,yes,yes,"Built-in lexer, syntax styles, folding, comments and completion; custom UDL styling pending"
+Language,Registry,IDM_LANG_REGISTRY,yes,yes,"Built-in lexer, syntax styles, folding, comments and completion; custom UDL styling pending"
+Language,Resource file,IDM_LANG_RC,yes,yes,"Built-in lexer, syntax styles, folding, comments and completion; custom UDL styling pending"
+Language,Ruby,IDM_LANG_RUBY,yes,yes,"Built-in lexer, syntax styles, folding, comments and completion; custom UDL styling pending"
+Language,Rust,IDM_LANG_RUST,yes,yes,"Built-in lexer, syntax styles, folding, comments and completion; custom UDL styling pending"
+Language,SAS,IDM_LANG_SAS,yes,yes,"Built-in lexer, syntax styles, folding, comments and completion; custom UDL styling pending"
+Language,Shell,IDM_LANG_BASH,yes,yes,"Built-in lexer, syntax styles, folding, comments and completion; custom UDL styling pending"
+Language,Scheme,IDM_LANG_SCHEME,yes,yes,"Built-in lexer, syntax styles, folding, comments and completion; custom UDL styling pending"
+Language,Smalltalk,IDM_LANG_SMALLTALK,yes,yes,"Built-in lexer, syntax styles, folding, comments and completion; custom UDL styling pending"
+Language,Spice,IDM_LANG_SPICE,yes,yes,"Built-in lexer, syntax styles, folding, comments and completion; custom UDL styling pending"
+Language,SQL,IDM_LANG_SQL,yes,yes,"Built-in lexer, syntax styles, folding, comments and completion; custom UDL styling pending"
+Language,Structured Text,IDM_LANG_STTXT,yes,yes,"Built-in lexer, syntax styles, folding, comments and completion; custom UDL styling pending"
+Language,Swift,IDM_LANG_SWIFT,yes,yes,"Built-in lexer, syntax styles, folding, comments and completion; custom UDL styling pending"
+Language,S-Record,IDM_LANG_SREC,yes,yes,"Built-in lexer, syntax styles, folding, comments and completion; custom UDL styling pending"
+Language,TCL,IDM_LANG_TCL,yes,yes,"Built-in lexer, syntax styles, folding, comments and completion; custom UDL styling pending"
+Language,Tektronix extended HEX,IDM_LANG_TEHEX,yes,yes,"Built-in lexer, syntax styles, folding, comments and completion; custom UDL styling pending"
+Language,TeX,IDM_LANG_TEX,yes,yes,"Built-in lexer, syntax styles, folding, comments and completion; custom UDL styling pending"
+Language,TOML,IDM_LANG_TOML,yes,yes,"Built-in lexer, syntax styles, folding, comments and completion; custom UDL styling pending"
+Language,txt2tags,IDM_LANG_TXT2TAGS,yes,yes,"Built-in lexer, syntax styles, folding, comments and completion; custom UDL styling pending"
+Language,TypeScript,IDM_LANG_TYPESCRIPT,yes,yes,"Built-in lexer, syntax styles, folding, comments and completion; custom UDL styling pending"
+Language,Verilog,IDM_LANG_VERILOG,yes,yes,"Built-in lexer, syntax styles, folding, comments and completion; custom UDL styling pending"
+Language,VHDL,IDM_LANG_VHDL,yes,yes,"Built-in lexer, syntax styles, folding, comments and completion; custom UDL styling pending"
+Language,Visual Basic,IDM_LANG_VB,yes,yes,"Built-in lexer, syntax styles, folding, comments and completion; custom UDL styling pending"
+Language,Visual Prolog,IDM_LANG_VISUALPROLOG,yes,yes,"Built-in lexer, syntax styles, folding, comments and completion; custom UDL styling pending"
+Language,XML,IDM_LANG_XML,yes,yes,"Built-in lexer, syntax styles, folding, comments and completion; custom UDL styling pending"
+Language,YAML,IDM_LANG_YAML,yes,yes,"Built-in lexer, syntax styles, folding, comments and completion; custom UDL styling pending"
+Language,Define your language...,IDM_LANG_USER_DLG,yes,yes,Manual behavioral review required
+Language,Open User Defined Language folder...,IDM_LANG_OPENUDLDIR,yes,yes,Manual behavioral review required
+Language,Notepad++ User Defined Languages Collection,IDM_LANG_UDLCOLLECTION_PROJECT_SITE,yes,yes,Manual behavioral review required
+Language,User-Defined,IDM_LANG_USER,yes,yes,Manual behavioral review required
+Settings,Preferences...,IDM_SETTING_PREFERENCE,yes,yes,Manual behavioral review required
+Settings,Style Configurator...,IDM_LANGSTYLE_CONFIG_DLG,no,no,Manual behavioral review required
+Settings,Shortcut Mapper...,IDM_SETTING_SHORTCUT_MAPPER,no,no,Manual behavioral review required
+Settings > Import,Import style theme(s)...,IDM_SETTING_IMPORTSTYLETHEMES,no,no,Manual behavioral review required
+Settings,Edit Popup ContextMenu,IDM_SETTING_EDITCONTEXTMENU,no,no,Manual behavioral review required
+Tools > MD5,Generate...,IDM_TOOL_MD5_GENERATE,yes,yes,Manual behavioral review required
+Tools > MD5,Generate from files...,IDM_TOOL_MD5_GENERATEFROMFILE,yes,yes,Manual behavioral review required
+Tools > MD5,Generate from selection into clipboard,IDM_TOOL_MD5_GENERATEINTOCLIPBOARD,yes,yes,Manual behavioral review required
+Tools > SHA-1,Generate...,IDM_TOOL_SHA1_GENERATE,yes,yes,Manual behavioral review required
+Tools > SHA-1,Generate from files...,IDM_TOOL_SHA1_GENERATEFROMFILE,yes,yes,Manual behavioral review required
+Tools > SHA-1,Generate from selection into clipboard,IDM_TOOL_SHA1_GENERATEINTOCLIPBOARD,yes,yes,Manual behavioral review required
+Tools > SHA-256,Generate...,IDM_TOOL_SHA256_GENERATE,yes,yes,Manual behavioral review required
+Tools > SHA-256,Generate from files...,IDM_TOOL_SHA256_GENERATEFROMFILE,yes,yes,Manual behavioral review required
+Tools > SHA-256,Generate from selection into clipboard,IDM_TOOL_SHA256_GENERATEINTOCLIPBOARD,yes,yes,Manual behavioral review required
+Tools > SHA-512,Generate...,IDM_TOOL_SHA512_GENERATE,yes,yes,Manual behavioral review required
+Tools > SHA-512,Generate from files...,IDM_TOOL_SHA512_GENERATEFROMFILE,yes,yes,Manual behavioral review required
+Tools > SHA-512,Generate from selection into clipboard,IDM_TOOL_SHA512_GENERATEINTOCLIPBOARD,yes,yes,Manual behavioral review required
+Macro,Start Recording,IDM_MACRO_STARTRECORDINGMACRO,yes,yes,Manual behavioral review required
+Macro,Stop Recording,IDM_MACRO_STOPRECORDINGMACRO,yes,yes,Manual behavioral review required
+Macro,Playback,IDM_MACRO_PLAYBACKRECORDEDMACRO,yes,yes,Manual behavioral review required
+Macro,Save Current Recorded Macro...,IDM_MACRO_SAVECURRENTMACRO,yes,yes,Manual behavioral review required
+Macro,Run a Macro Multiple Times...,IDM_MACRO_RUNMULTIMACRODLG,yes,yes,Manual behavioral review required
+Run,Run...,IDM_EXECUTE,yes,yes,Manual behavioral review required
+Run,Validate shortcuts.xml,IDM_EXECUTE_VALIDATE_SHORTCUTSXML,no,no,Manual behavioral review required
+Window > Sort By,Name A to Z,IDM_WINDOW_SORT_FN_ASC,yes,yes,Manual behavioral review required
+Window > Sort By,Name Z to A,IDM_WINDOW_SORT_FN_DSC,yes,yes,Manual behavioral review required
+Window > Sort By,Path A to Z,IDM_WINDOW_SORT_FP_ASC,yes,yes,Manual behavioral review required
+Window > Sort By,Path Z to A,IDM_WINDOW_SORT_FP_DSC,yes,yes,Manual behavioral review required
+Window > Sort By,Type A to Z,IDM_WINDOW_SORT_FT_ASC,yes,yes,Manual behavioral review required
+Window > Sort By,Type Z to A,IDM_WINDOW_SORT_FT_DSC,yes,yes,Manual behavioral review required
+Window > Sort By,Content Length Ascending,IDM_WINDOW_SORT_FS_ASC,yes,yes,Manual behavioral review required
+Window > Sort By,Content Length Descending,IDM_WINDOW_SORT_FS_DSC,yes,yes,Manual behavioral review required
+Window > Sort By,Modified Time Ascending,IDM_WINDOW_SORT_FD_ASC,yes,yes,Manual behavioral review required
+Window > Sort By,Modified Time Descending,IDM_WINDOW_SORT_FD_DSC,yes,yes,Manual behavioral review required
+Window,Windows...,IDM_WINDOW_WINDOWS,no,no,Manual behavioral review required
+Window,Recent Window,IDM_WINDOW_MRU_FIRST,no,no,Manual behavioral review required
+?,Command Line Arguments...,IDM_CMDLINEARGUMENTS,yes,yes,Manual behavioral review required
+?,Notepad++ Home,IDM_HOMESWEETHOME,yes,yes,Manual behavioral review required
+?,Notepad++ Project Page,IDM_PROJECTPAGE,yes,yes,Manual behavioral review required
+?,Notepad++ Online User Manual,IDM_ONLINEDOCUMENT,yes,yes,Manual behavioral review required
+?,Notepad++ Community (Forum),IDM_FORUM,yes,yes,Manual behavioral review required
+?,Update Notepad++,IDM_UPDATE_NPP,no,no,Manual behavioral review required
+?,Set Updater Proxy...,IDM_CONFUPDATERPROXY,no,no,Manual behavioral review required
+?,Debug Info...,IDM_DEBUGINFO,yes,yes,Manual behavioral review required
+?,About Notepad++,IDM_ABOUT,yes,yes,Manual behavioral review required
+▼,Recent Window,IDM_DROPLIST_LIST,no,no,Manual behavioral review required

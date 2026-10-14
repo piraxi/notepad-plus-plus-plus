@@ -61,7 +61,7 @@ fn multiline_nul_unicode_and_backward_search_keep_byte_offsets() {
     assert_eq!(
         doc.search_matches(r"\r\n", SearchOptions::default())
             .unwrap(),
-        vec![]
+        Vec::<std::ops::Range<usize>>::new()
     );
 }
 

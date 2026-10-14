@@ -44,6 +44,10 @@ const STATUS_ID: usize = 103;
 const SHOW_STATUS_BAR: u32 = 61029;
 const SHOW_TAB_BAR: u32 = 61030;
 const SHOW_MENU_BAR: u32 = 61031;
+const LOAD_MACRO: u32 = 61057;
+const SHOW_TOOLBAR: u32 = 61058;
+const SHOW_LINE_NUMBERS: u32 = 61059;
+const SEARCH_REGEX: u32 = 61060;
 // Rewrite-specific explicit open/convert actions, distinct from upstream's
 // system-ANSI and reinterpret-current-buffer commands.
 const OPEN_1252: u32 = 61001;
@@ -57,9 +61,9 @@ const OPEN_UTF16BE_NO_BOM: u32 = 61008;
 const CONVERT_UTF16LE_NO_BOM: u32 = 61009;
 const CONVERT_UTF16BE_NO_BOM: u32 = 61010;
 const SEARCH_EXTENDED: u32 = 61011;
-const SEARCH_COUNT: u32 = 61012;
+pub(crate) const SEARCH_COUNT: u32 = 61012;
 const SEARCH_IN_SELECTION: u32 = 61013;
-const SEARCH_WRAP: u32 = 61054;
+pub(crate) const SEARCH_WRAP: u32 = 61054;
 const SEARCH_BOOKMARK_MATCHES: u32 = 61055;
 const CLEAR_BOOKMARKS_IN_SELECTION: u32 = 61056;
 const TAB_WIDTH_2: u32 = 61014;
@@ -101,7 +105,24 @@ const WORD_PART_LEFT_EXTEND: u32 = 61052;
 const WORD_PART_RIGHT_EXTEND: u32 = 61053;
 // Commands that cannot run on a read-only buffer. Back-tab is excluded because
 // outside indentation it is a navigation operation, even in read-only text.
+const FORMAT_DOCUMENT: u32 = 61100;
+const FORMAT_SELECTION: u32 = 61101;
 const EDIT_COMMANDS: &[u32] = &[
+    FORMAT_DOCUMENT,
+    FORMAT_SELECTION,
+    IDM_EDIT_PASTE_AS_HTML,
+    IDM_EDIT_PASTE_AS_RTF,
+    IDM_EDIT_EOL2WS,
+    IDM_EDIT_TRIMALL,
+    IDM_EDIT_AUTOCOMPLETE,
+    IDM_EDIT_DELETE,
+    IDM_EDIT_REDACT_SELECTION,
+    IDM_EDIT_AUTOCOMPLETE_CURRENTFILE,
+    IDM_EDIT_BLOCK_COMMENT,
+    IDM_EDIT_BLOCK_COMMENT_SET,
+    IDM_EDIT_BLOCK_UNCOMMENT,
+    IDM_EDIT_STREAM_COMMENT,
+    IDM_EDIT_STREAM_UNCOMMENT,
     IDM_SEARCH_DELETEMARKEDLINES,
     IDM_SEARCH_DELETEUNMARKEDLINES,
     IDM_SEARCH_CUTMARKEDLINES,
@@ -178,6 +199,8 @@ const EDIT_COMMANDS: &[u32] = &[
     CONVERT_UTF16BE_NO_BOM,
 ];
 pub(crate) enum Event {
+    LiteralCharacter(char),
+    NativeChanged,
     GoTo(i64, bool),
     GoToRefresh,
     Wheel(i32, bool),
@@ -195,10 +218,14 @@ pub(crate) enum Event {
     ClearFindFilesResults,
     LoadSession(PathBuf),
     Search(Request),
+    SearchTab(u32, String),
+    SearchMode(SearchMode),
     Command(u32),
     Changed(String, usize, usize),
     Selection(usize, usize),
     Tab(usize),
+    CloseTab(usize),
+    MoveTab(usize, usize),
     Resize,
     Close,
 }
@@ -241,7 +268,24 @@ fn resize_controls(window: HWND) {
         GetClientRect(window, &mut rect);
         let hidden = is_status_hidden(window);
         let tabs_hidden = is_control_hidden(window, TAB_ID);
-        let top = if tabs_hidden { 0 } else { 28 };
+        let toolbar_height = if is_control_hidden(window, crate::editor_chrome::TOOLBAR as usize) {
+            0
+        } else {
+            28
+        };
+        let gutter_width = if is_control_hidden(window, crate::editor_chrome::GUTTER as usize) {
+            0
+        } else {
+            52
+        };
+        crate::scintilla::send(
+            GetDlgItem(window, EDIT_ID as i32),
+            crate::scintilla::ids::SCI_SETMARGINWIDTHN,
+            0,
+            gutter_width as isize,
+        );
+        let gutter_width = 0;
+        let top = toolbar_height + if tabs_hidden { 0 } else { 28 };
         let result_list = GetDlgItem(window, crate::find_files::RESULTS);
         let result_height = if !result_list.is_null()
             && GetWindowLongPtrW(result_list, GWL_STYLE) as u32 & WS_VISIBLE != 0
@@ -277,12 +321,35 @@ fn resize_controls(window: HWND) {
                 1,
             );
         }
-        MoveWindow(GetDlgItem(window, TAB_ID as i32), 0, 0, rect.right, 28, 1);
         MoveWindow(
-            GetDlgItem(window, EDIT_ID as i32),
+            GetDlgItem(window, crate::editor_chrome::TOOLBAR),
+            0,
+            0,
+            rect.right,
+            28,
+            1,
+        );
+        MoveWindow(
+            GetDlgItem(window, TAB_ID as i32),
+            0,
+            toolbar_height,
+            rect.right,
+            28,
+            1,
+        );
+        MoveWindow(
+            GetDlgItem(window, crate::editor_chrome::GUTTER),
             0,
             top,
-            rect.right,
+            0,
+            (result_top - top).max(0),
+            1,
+        );
+        MoveWindow(
+            GetDlgItem(window, EDIT_ID as i32),
+            gutter_width,
+            top,
+            (rect.right - gutter_width).max(0),
             (rect.bottom - top - if hidden { 0 } else { 24 } - result_height).max(0),
             1,
         );
@@ -349,6 +416,13 @@ unsafe extern "system" fn edit_proc(
                 return 0;
             }
         }
+        // TranslateMessage still posts WM_CHAR. Keep Scintilla's key-down
+        // bindings from inserting a second newline/tab before our core edit.
+        if message == WM_KEYDOWN
+            && matches!(wp, x if x == VK_RETURN as usize || x == VK_TAB as usize)
+        {
+            return 0;
+        }
         if message == WM_CHAR && wp == VK_RETURN as usize {
             let (start, end) = control_selection(hwnd);
             enqueue(Event::Selection(start, end));
@@ -369,6 +443,18 @@ unsafe extern "system" fn edit_proc(
             enqueue(Event::Command(IDM_EDIT_UNDO));
             return 0;
         }
+        if message == WM_CHAR && matches!(wp, 0x2400 | 0x241b) {
+            enqueue(Event::LiteralCharacter(char::from_u32(wp as u32).unwrap()));
+            return 0;
+        }
+        if matches!(message, WM_COPY | WM_CUT | WM_PASTE) {
+            enqueue(Event::Command(match message {
+                WM_COPY => IDM_EDIT_COPY,
+                WM_CUT => IDM_EDIT_CUT,
+                _ => IDM_EDIT_PASTE,
+            }));
+            return 0;
+        }
         if matches!(
             message,
             WM_CHAR | WM_KEYDOWN | WM_CUT | WM_PASTE | WM_CLEAR | WM_KEYUP | WM_LBUTTONUP
@@ -376,7 +462,23 @@ unsafe extern "system" fn edit_proc(
             let (start, end) = control_selection(hwnd);
             enqueue(Event::Selection(start, end));
         }
-        DefSubclassProc(hwnd, message, wp, lp)
+        let result = DefSubclassProc(hwnd, message, wp, lp);
+        if matches!(
+            message,
+            WM_PAINT
+                | WM_VSCROLL
+                | WM_MOUSEWHEEL
+                | WM_KEYUP
+                | WM_SETTEXT
+                | EM_LINESCROLL
+                | WM_SETFONT
+        ) {
+            let gutter = GetDlgItem(GetParent(hwnd), crate::editor_chrome::GUTTER);
+            if !gutter.is_null() {
+                InvalidateRect(gutter, null(), 0);
+            }
+        }
+        result
     }
 }
 unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
@@ -515,12 +617,35 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
                 enqueue(Event::Changed(control_text(lp as HWND), start, end));
                 0
             }
-            WM_COMMAND if lp == 0 => {
+            WM_COMMAND
+                if lp == 0 || lp as HWND == GetDlgItem(hwnd, crate::editor_chrome::TOOLBAR) =>
+            {
                 enqueue(Event::Command((wp & 0xffff) as u32));
                 0
             }
             WM_NOTIFY => {
                 let notification = &*(lp as *const NMHDR);
+                if notification.idFrom == EDIT_ID && !UPDATING.get() {
+                    use crate::scintilla::ids::*;
+                    if notification.code == SCN_MODIFIED {
+                        let detail = &*(lp as *const crate::scintilla::Notification);
+                        if detail.modification_type as u32 & (SC_MOD_INSERTTEXT | SC_MOD_DELETETEXT)
+                            != 0
+                        {
+                            EVENTS.with_borrow_mut(|events| {
+                                if !events
+                                    .iter()
+                                    .any(|event| matches!(event, Event::NativeChanged))
+                                {
+                                    events.push_back(Event::NativeChanged);
+                                }
+                            });
+                        }
+                    } else if notification.code == SCN_UPDATEUI {
+                        let (start, end) = control_selection(notification.hwndFrom);
+                        enqueue(Event::Selection(start, end));
+                    }
+                }
                 if notification.idFrom == TAB_ID && notification.code == TCN_SELCHANGE {
                     enqueue(Event::Tab(
                         SendMessageW(notification.hwndFrom, TCM_GETCURSEL, 0, 0) as usize,
@@ -550,6 +675,16 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
 }
 
 struct App {
+    applied_language: Option<u32>,
+    fold_states: std::collections::HashMap<BufferId, Vec<usize>>,
+    user_languages: Vec<crate::languages::Language>,
+    languages: std::collections::HashMap<BufferId, u32>,
+    fullscreen: Option<(isize, RECT)>,
+    last_regex_empty: Option<(BufferId, usize, String)>,
+    word_wrap: bool,
+    macro_recording: bool,
+    macro_steps: Vec<crate::macros::Step>,
+    run_command: String,
     window: HWND,
     edit: HWND,
     tabs: HWND,
@@ -584,6 +719,7 @@ struct App {
 }
 impl App {
     fn create(visible: bool) -> io::Result<Self> {
+        crate::scintilla::register()?;
         // SAFETY: All windows are created and operated on the current UI thread.
         unsafe {
             let instance = GetModuleHandleW(null());
@@ -600,7 +736,7 @@ impl App {
             }
             let common = INITCOMMONCONTROLSEX {
                 dwSize: size_of::<INITCOMMONCONTROLSEX>() as u32,
-                dwICC: ICC_TAB_CLASSES,
+                dwICC: ICC_TAB_CLASSES | ICC_BAR_CLASSES,
             };
             if InitCommonControlsEx(&common) == 0 {
                 return Err(io::Error::last_os_error());
@@ -637,8 +773,8 @@ impl App {
                 null(),
             );
             let edit = CreateWindowExW(
-                WS_EX_CLIENTEDGE,
-                w!("EDIT"),
+                0,
+                w!("Scintilla"),
                 w!(""),
                 WS_CHILD
                     | WS_VISIBLE
@@ -675,11 +811,13 @@ impl App {
                 || edit.is_null()
                 || status.is_null()
                 || SetWindowSubclass(edit, Some(edit_proc), 1, 0) == 0
+                || !crate::tabs::install(tabs)
             {
                 let error = io::Error::last_os_error();
                 DestroyWindow(window);
                 return Err(error);
             }
+            crate::scintilla::install(edit)?;
             SendMessageW(edit, EM_LIMITTEXT, 0x7fff_fffe, 0);
             SendMessageW(
                 edit,
@@ -696,12 +834,23 @@ impl App {
                 );
             }
             let menu = create_menu();
+            crate::editor_chrome::create(window)?;
             SetMenu(window, menu);
             crate::plugin_host::publish_main_menu(window, menu);
             CheckMenuItem(menu, SHOW_MENU_BAR, MF_BYCOMMAND | MF_CHECKED);
             CheckMenuItem(menu, SEARCH_WRAP, MF_BYCOMMAND | MF_CHECKED);
             DragAcceptFiles(window, 1);
             let mut app = Self {
+                applied_language: None,
+                fold_states: Default::default(),
+                user_languages: crate::languages::load_user(),
+                languages: Default::default(),
+                fullscreen: None,
+                last_regex_empty: None,
+                word_wrap: false,
+                macro_recording: false,
+                macro_steps: Vec::new(),
+                run_command: String::new(),
                 window,
                 edit,
                 tabs,
@@ -721,8 +870,8 @@ impl App {
                 search_in_selection: false,
                 tab_width: std::num::NonZeroUsize::new(4).unwrap(),
                 indentation_style: IndentationStyle::default(),
-                basic_auto_indent: false,
-                zoom: 0,
+                basic_auto_indent: true,
+                zoom: i32::MIN,
                 wheel_remainder: 0,
                 horizontal_wheel_remainder: 0,
                 date_first: false,
@@ -736,12 +885,19 @@ impl App {
             };
             app.rebuild_plugin_menu()?;
             app.workspace.add(Document::new());
+            app.set_zoom(0)?;
             app.set_tab_width(4)?;
             app.refresh();
             app.resize();
+            app.apply_preferences(&crate::preferences::Preferences::default())?;
             if visible {
+                match crate::preferences::load() {
+                    Ok(settings) => app.apply_preferences(&settings)?,
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                    Err(error) => app.report(format!("Cannot load preferences: {error}")),
+                }
                 ShowWindow(window, SW_SHOW);
-                SetFocus(edit);
+                SetFocus(app.edit);
             }
             Ok(app)
         }
@@ -788,18 +944,14 @@ impl App {
         // SAFETY: GDI objects and window are used on the owning UI thread. The
         // old owned font is deleted only after it is deselected from the edit.
         unsafe {
-            let stock = GetStockObject(ANSI_FIXED_FONT);
-            let font = if zoom == 0 {
-                stock
-            } else {
+            let font = {
                 let mut description = LOGFONTW::default();
-                if GetObjectW(
-                    stock,
-                    size_of::<LOGFONTW>() as i32,
-                    &mut description as *mut _ as _,
-                ) == 0
+                for (target, unit) in description
+                    .lfFaceName
+                    .iter_mut()
+                    .zip("Consolas".encode_utf16())
                 {
-                    return Err(io::Error::last_os_error());
+                    *target = unit;
                 }
                 let dc = GetDC(self.edit);
                 if dc.is_null() {
@@ -807,8 +959,9 @@ impl App {
                 }
                 let dpi = GetDeviceCaps(dc, LOGPIXELSY as i32);
                 ReleaseDC(self.edit, dc);
-                description.lfHeight = -(description.lfHeight.abs() + zoom * dpi / 72).max(2);
+                description.lfHeight = -((11 + zoom).max(3) * dpi / 72).max(2);
                 description.lfWidth = 0;
+                description.lfQuality = CLEARTYPE_QUALITY;
                 // The stock fixed font can be a bitmap face with one size.
                 // Request its scalable TrueType counterpart for zoomed text.
                 description.lfOutPrecision = OUT_TT_ONLY_PRECIS;
@@ -827,7 +980,7 @@ impl App {
                 margins,
             );
             let previous = self.zoom_font;
-            self.zoom_font = if zoom == 0 { null_mut() } else { font };
+            self.zoom_font = font;
             self.zoom = zoom;
             if !previous.is_null() {
                 DeleteObject(previous);
@@ -927,10 +1080,59 @@ impl App {
     fn resize(&self) {
         resize_controls(self.window);
     }
+    fn apply_language(&mut self) {
+        let language = self.language().command;
+        if self.applied_language != Some(language) {
+            crate::scintilla::language(self.edit, self.language());
+            self.applied_language = Some(language);
+        }
+    }
+    fn language(&self) -> &crate::languages::Language {
+        self.languages
+            .get(&self.active_id())
+            .and_then(|&id| {
+                self.user_languages
+                    .iter()
+                    .find(|l| l.command == id)
+                    .or_else(|| crate::languages::by_command(id))
+            })
+            .unwrap_or_else(|| {
+                let extension = self
+                    .document()
+                    .path()
+                    .and_then(|p| p.extension())
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("");
+                self.user_languages
+                    .iter()
+                    .find(|l| {
+                        !extension.is_empty()
+                            && l.extensions
+                                .split_whitespace()
+                                .any(|e| e.eq_ignore_ascii_case(extension))
+                    })
+                    .unwrap_or_else(|| crate::languages::detect(self.document().path()))
+            })
+    }
     fn caption(&self) {
         // SAFETY: Menu belongs to the live window on this UI thread.
         unsafe {
             let menu = crate::plugin_host::main_menu(self.window);
+            for language in crate::languages::LANGUAGES
+                .iter()
+                .chain(self.user_languages.iter())
+            {
+                CheckMenuItem(
+                    menu,
+                    language.command,
+                    MF_BYCOMMAND
+                        | if language.command == self.language().command {
+                            MF_CHECKED
+                        } else {
+                            MF_UNCHECKED
+                        },
+                );
+            }
             let path = self.document().path();
             let mut availability = self.launch_availability.borrow_mut();
             if availability.as_ref().map(|entry| entry.0.as_path()) != path {
@@ -951,6 +1153,29 @@ impl App {
                     IDM_FILE_OPEN_DEFAULT_VIEWER,
                     availability.as_ref().is_some_and(|entry| entry.2),
                 ),
+            ] {
+                EnableMenuItem(
+                    menu,
+                    command,
+                    MF_BYCOMMAND | if enabled { MF_ENABLED } else { MF_GRAYED },
+                );
+            }
+            for (command, enabled) in [
+                (IDM_MACRO_STARTRECORDINGMACRO, !self.macro_recording),
+                (IDM_MACRO_STOPRECORDINGMACRO, self.macro_recording),
+                (
+                    IDM_MACRO_PLAYBACKRECORDEDMACRO,
+                    !self.macro_recording
+                        && !self.macro_steps.is_empty()
+                        && !self.document().is_read_only(),
+                ),
+                (
+                    IDM_MACRO_RUNMULTIMACRODLG,
+                    !self.macro_recording
+                        && !self.macro_steps.is_empty()
+                        && !self.document().is_read_only(),
+                ),
+                (IDM_MACRO_SAVECURRENTMACRO, !self.macro_steps.is_empty()),
             ] {
                 EnableMenuItem(
                     menu,
@@ -1015,12 +1240,25 @@ impl App {
                     && match command {
                         IDM_EDIT_UNDO => self.document().can_undo(),
                         IDM_EDIT_REDO => self.document().can_redo(),
+                        FORMAT_SELECTION => !self.document().selection().range().is_empty(),
+                        IDM_EDIT_BLOCK_COMMENT
+                        | IDM_EDIT_BLOCK_COMMENT_SET
+                        | IDM_EDIT_BLOCK_UNCOMMENT => !self.language().line.is_empty(),
+                        IDM_EDIT_STREAM_COMMENT | IDM_EDIT_STREAM_UNCOMMENT => {
+                            !self.language().open.is_empty() && !self.language().close.is_empty()
+                        }
                         _ => true,
                     };
                 EnableMenuItem(
                     menu,
                     command,
                     MF_BYCOMMAND | if enabled { MF_ENABLED } else { MF_GRAYED },
+                );
+                SendMessageW(
+                    GetDlgItem(self.window, crate::editor_chrome::TOOLBAR),
+                    TB_ENABLEBUTTON,
+                    command as usize,
+                    enabled as isize,
                 );
             }
         }
@@ -1033,7 +1271,7 @@ impl App {
         let doc = self.document();
         let name = doc
             .path()
-            .map(|p| p.display().to_string())
+            .map(crate::find_files::display_path)
             .unwrap_or_else(|| {
                 self.workspace
                     .untitled_name(self.active_id())
@@ -1064,6 +1302,8 @@ impl App {
                 ""
             }
         );
+        status.push_str("   |   ");
+        status.push_str(&self.language().name);
         use crate::file_attributes::DiskState;
         if doc.bookmarked_lines().any(|marked| marked == line) {
             status.push_str("   |   Bookmarked");
@@ -1091,7 +1331,11 @@ impl App {
     fn refresh_tabs(&self) {
         // SAFETY: Each TCITEMW and its text remain valid during SendMessageW.
         unsafe {
-            SendMessageW(self.tabs, TCM_DELETEALLITEMS, 0, 0);
+            SendMessageW(self.tabs, WM_SETREDRAW, 0, 0);
+            let count = self.workspace.buffers().count();
+            while SendMessageW(self.tabs, TCM_GETITEMCOUNT, 0, 0) as usize > count {
+                SendMessageW(self.tabs, TCM_DELETEITEM, count, 0);
+            }
             for (index, (id, doc)) in self.workspace.buffers().enumerate() {
                 let name = doc
                     .path()
@@ -1108,7 +1352,7 @@ impl App {
                             .to_owned()
                     });
                 let mut text = wide(&format!(
-                    "{}{}",
+                    "{}{}    ×",
                     if doc.is_dirty() { "*" } else { "" },
                     name
                 ));
@@ -1119,7 +1363,11 @@ impl App {
                 };
                 SendMessageW(
                     self.tabs,
-                    TCM_INSERTITEMW,
+                    if index < SendMessageW(self.tabs, TCM_GETITEMCOUNT, 0, 0) as usize {
+                        TCM_SETITEMW
+                    } else {
+                        TCM_INSERTITEMW
+                    },
                     index,
                     &item as *const _ as isize,
                 );
@@ -1127,6 +1375,8 @@ impl App {
                     SendMessageW(self.tabs, TCM_SETCURSEL, index, 0);
                 }
             }
+            SendMessageW(self.tabs, WM_SETREDRAW, 1, 0);
+            InvalidateRect(self.tabs, null(), 0);
         }
     }
     fn refresh(&mut self) {
@@ -1142,7 +1392,8 @@ impl App {
         UPDATING.set(true);
         // SAFETY: Notifications are suppressed while copying model state to UI.
         unsafe {
-            SetWindowTextW(self.edit, wide(&self.projection.text).as_ptr());
+            crate::scintilla::set_text(self.edit, &self.projection.text);
+            self.apply_language();
             SendMessageW(
                 self.edit,
                 EM_SETSEL,
@@ -1156,6 +1407,12 @@ impl App {
                 0,
             );
             SendMessageW(self.edit, EM_SCROLLCARET, 0, 0);
+            if switching {
+                crate::scintilla::restore_folds(
+                    self.edit,
+                    self.fold_states.get(&active).map_or(&[], Vec::as_slice),
+                );
+            }
         }
         self.displayed_buffer = Some(active);
         if switching {
@@ -1169,6 +1426,10 @@ impl App {
     }
     fn capture_scroll(&mut self) {
         if let Some(id) = self.displayed_buffer {
+            self.fold_states
+                .insert(id, crate::scintilla::collapsed(self.edit));
+        }
+        if let Some(id) = self.displayed_buffer {
             // SAFETY: Read-only query of our live EDIT control.
             let line =
                 unsafe { SendMessageW(self.edit, EM_GETFIRSTVISIBLELINE, 0, 0) }.max(0) as usize;
@@ -1177,11 +1438,9 @@ impl App {
     }
     fn scroll_to_line(&self, line: usize) {
         let line = line.min(self.document().line_starts().len().saturating_sub(1));
-        // SAFETY: Scalar scroll query/update of our live EDIT control.
-        unsafe {
-            let current = SendMessageW(self.edit, EM_GETFIRSTVISIBLELINE, 0, 0).max(0);
-            SendMessageW(self.edit, EM_LINESCROLL, 0, line as isize - current);
-        }
+        use crate::scintilla::{ids::*, send};
+        let visible = send(self.edit, SCI_VISIBLEFROMDOCLINE, line, 0).max(0);
+        send(self.edit, SCI_SETFIRSTVISIBLELINE, visible as usize, 0);
     }
     /// Use only when the document text and its native projection are unchanged.
     fn refresh_selection(&self) {
@@ -1251,12 +1510,6 @@ impl App {
             self.workspace.activate(id);
         } else {
             let doc = Document::open_as(&path, encoding)?;
-            if doc.text().contains('\0') {
-                return Err(io::Error::new(
-                    io::ErrorKind::Unsupported,
-                    "The initial native text view cannot display embedded NUL characters. This file has not been opened.",
-                ));
-            }
             let empty = self.document().path().is_none()
                 && self.document().text().is_empty()
                 && !self.document().is_dirty();
@@ -1462,6 +1715,15 @@ impl App {
                 let result = (|| {
                     self.open_as(Path::new(filename), file.explicit_encoding()?)?;
                     file.restore_document_state(self.document_mut())?;
+                    if let Some(name) = file.attributes.get("lang") {
+                        if let Some(language) = crate::languages::LANGUAGES
+                            .iter()
+                            .chain(self.user_languages.iter())
+                            .find(|l| &l.name == name)
+                        {
+                            self.languages.insert(self.active_id(), language.command);
+                        }
+                    }
                     Ok::<_, io::Error>(())
                 })();
                 match result {
@@ -1533,6 +1795,21 @@ impl App {
                 .buffers()
                 .find(|(_, document)| document.path().and_then(Path::to_str) == file.filename())
                 .map(|(id, _)| id);
+            if let Some(id) = id {
+                let language = self
+                    .languages
+                    .get(&id)
+                    .and_then(|&cmd| {
+                        self.user_languages
+                            .iter()
+                            .find(|l| l.command == cmd)
+                            .or_else(|| crate::languages::by_command(cmd))
+                    })
+                    .unwrap_or_else(|| {
+                        crate::languages::detect(self.workspace.get(id).and_then(|d| d.path()))
+                    });
+                file.attributes.insert("lang".into(), language.name.clone());
+            }
             if let Some(line) = id.and_then(|id| self.first_visible_lines.get(&id)) {
                 file.attributes
                     .insert("firstVisibleLine".into(), line.to_string());
@@ -1548,20 +1825,6 @@ impl App {
             return Ok(());
         };
         let bytes = std::fs::read(&path)?;
-        // Validate native-view support before replacing any document state.
-        let decoded = match self.document().encoding() {
-            encoding if encoding.requires_explicit_decode() => {
-                Document::from_bytes_as(&bytes, encoding)
-            }
-            _ => Document::from_bytes(&bytes),
-        }
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-        if decoded.text().contains('\0') {
-            return Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                "The native text view cannot display embedded NUL characters.",
-            ));
-        }
         let readonly = std::fs::metadata(&path)?.permissions().readonly();
         self.document_mut()
             .reload_from_bytes(&bytes)
@@ -1592,6 +1855,16 @@ impl App {
         }
     }
     fn show_find_files(&mut self) -> io::Result<()> {
+        if let Some(dialog) = &self.search_dialog {
+            dialog.hide();
+        }
+        if let Some(query) = self
+            .search_dialog
+            .as_ref()
+            .and_then(SearchDialog::current_query)
+        {
+            self.search_text = query.needle;
+        }
         let (start, end) = control_selection(self.edit);
         self.sync_native_selection(start, end);
         let selected = &self.document().text()[self.document().selection().range()];
@@ -1653,6 +1926,11 @@ impl App {
         Ok(())
     }
     fn show_search(&mut self, replace: bool) {
+        if let Some(dialog) = &self.find_files {
+            unsafe {
+                ShowWindow(dialog.dialog, SW_HIDE);
+            }
+        }
         let (start, end) = control_selection(self.edit);
         self.sync_native_selection(start, end);
         let _ = self.document_mut().expand_word_selection();
@@ -1751,9 +2029,35 @@ impl App {
             mode,
             ..self.search_options
         };
-        let start = self.document().search_start(direction, include_selection);
+        let mut start = self.document().search_start(direction, include_selection);
+        if mode == SearchMode::Regex
+            && !include_selection
+            && self
+                .last_regex_empty
+                .as_ref()
+                .is_some_and(|(id, at, query)| {
+                    *id == self.active_id() && *at == start && query == &self.search_text
+                })
+        {
+            start = match direction {
+                SearchDirection::Forward => match self.document().text()[start..].chars().next() {
+                    Some(ch) => start + ch.len_utf8(),
+                    None if options.wrap => 0,
+                    None => return,
+                },
+                SearchDirection::Backward => {
+                    match self.document().text()[..start].char_indices().next_back() {
+                        Some((at, _)) => at,
+                        None if options.wrap => self.document().text().len(),
+                        None => return,
+                    }
+                }
+            };
+        }
         match self.document().search(&self.search_text, start, options) {
             Ok(Some(found)) => {
+                self.last_regex_empty = (mode == SearchMode::Regex && found.is_empty())
+                    .then(|| (self.active_id(), found.start, self.search_text.clone()));
                 self.select_search_match(found, start, direction);
             }
             Ok(None) => {
@@ -1902,6 +2206,29 @@ impl App {
                 .search(&request.needle, start, request.options)
             {
                 Ok(Some(found)) if found == selected => {
+                    let replacement = if request.options.mode == SearchMode::Regex {
+                        match npp_editor_core::regex_search::replacements(
+                            self.document().text(),
+                            &request.needle,
+                            &request.replacement,
+                            request.options,
+                            selected.clone(),
+                        ) {
+                            Ok(edits) => std::borrow::Cow::Owned(
+                                edits
+                                    .into_iter()
+                                    .find(|(range, _)| range == &selected)
+                                    .map(|(_, text)| text)
+                                    .unwrap_or_default(),
+                            ),
+                            Err(error) => {
+                                self.report(error);
+                                return;
+                            }
+                        }
+                    } else {
+                        replacement
+                    };
                     if let Err(e) = self
                         .document_mut()
                         .replace_search_target(selected, &replacement)
@@ -1959,11 +2286,1051 @@ impl App {
         }
     }
 
+    fn current_preferences(&self) -> crate::preferences::Preferences {
+        crate::preferences::Preferences {
+            tab_width: self.tab_width.get(),
+            spaces: self.indentation_style == IndentationStyle::Spaces,
+            auto_indent: self.basic_auto_indent,
+            word_wrap: self.word_wrap,
+            zoom: self.zoom,
+            toolbar: !is_control_hidden(self.window, crate::editor_chrome::TOOLBAR as usize),
+            line_numbers: !is_control_hidden(self.window, crate::editor_chrome::GUTTER as usize),
+            status_bar: !is_status_hidden(self.window),
+            tab_bar: !is_control_hidden(self.window, TAB_ID),
+        }
+    }
+    fn apply_preferences(&mut self, value: &crate::preferences::Preferences) -> io::Result<()> {
+        self.set_tab_width(value.tab_width.clamp(1, 32))?;
+        self.indentation_style = if value.spaces {
+            IndentationStyle::Spaces
+        } else {
+            IndentationStyle::Tabs
+        };
+        self.basic_auto_indent = value.auto_indent;
+        self.set_zoom(value.zoom)?;
+        if value.word_wrap != self.word_wrap {
+            self.toggle_word_wrap()?;
+        }
+        unsafe {
+            let menu = crate::plugin_host::main_menu(self.window);
+            for (id, command, show) in [
+                (crate::editor_chrome::TOOLBAR, SHOW_TOOLBAR, value.toolbar),
+                (
+                    crate::editor_chrome::GUTTER,
+                    SHOW_LINE_NUMBERS,
+                    value.line_numbers,
+                ),
+                (STATUS_ID as i32, SHOW_STATUS_BAR, value.status_bar),
+                (TAB_ID as i32, SHOW_TAB_BAR, value.tab_bar),
+            ] {
+                ShowWindow(
+                    GetDlgItem(self.window, id),
+                    if show { SW_SHOWNA } else { SW_HIDE },
+                );
+                CheckMenuItem(
+                    menu,
+                    command,
+                    MF_BYCOMMAND | if show { MF_CHECKED } else { MF_UNCHECKED },
+                );
+            }
+            for (command, checked) in [
+                (INDENT_WITH_SPACES, value.spaces),
+                (BASIC_AUTO_INDENT, value.auto_indent),
+            ] {
+                CheckMenuItem(
+                    menu,
+                    command,
+                    MF_BYCOMMAND | if checked { MF_CHECKED } else { MF_UNCHECKED },
+                );
+            }
+        }
+        self.resize();
+        Ok(())
+    }
+    fn toggle_word_wrap(&mut self) -> io::Result<()> {
+        self.word_wrap = !self.word_wrap;
+        crate::scintilla::send(
+            self.edit,
+            crate::scintilla::ids::SCI_SETWRAPMODE,
+            self.word_wrap as usize,
+            0,
+        );
+        unsafe {
+            CheckMenuItem(
+                crate::plugin_host::main_menu(self.window),
+                IDM_VIEW_WRAP,
+                MF_BYCOMMAND
+                    | if self.word_wrap {
+                        MF_CHECKED
+                    } else {
+                        MF_UNCHECKED
+                    },
+            );
+        }
+        Ok(())
+    }
+    fn hash_command(&mut self, command: u32) -> io::Result<()> {
+        use sha2::Digest;
+        let from_file = [
+            IDM_TOOL_MD5_GENERATEFROMFILE,
+            IDM_TOOL_SHA1_GENERATEFROMFILE,
+            IDM_TOOL_SHA256_GENERATEFROMFILE,
+            IDM_TOOL_SHA512_GENERATEFROMFILE,
+        ]
+        .contains(&command);
+        let to_clipboard = [
+            IDM_TOOL_MD5_GENERATEINTOCLIPBOARD,
+            IDM_TOOL_SHA1_GENERATEINTOCLIPBOARD,
+            IDM_TOOL_SHA256_GENERATEINTOCLIPBOARD,
+            IDM_TOOL_SHA512_GENERATEINTOCLIPBOARD,
+        ]
+        .contains(&command);
+        let bytes = if from_file {
+            let Some(path) = file_dialog(self.window, false)? else {
+                return Ok(());
+            };
+            std::fs::read(path)?
+        } else if to_clipboard {
+            let (start, end) = control_selection(self.edit);
+            let range = self.sync_native_selection(start, end).range();
+            self.document().text()[range].as_bytes().to_vec()
+        } else {
+            let Some(value) = crate::input_dialog::ask(
+                self.window,
+                "Generate Hash",
+                "Enter the text to hash (UTF-8):",
+                "",
+            )?
+            else {
+                return Ok(());
+            };
+            value.into_bytes()
+        };
+        let hash = match command {
+            IDM_TOOL_MD5_GENERATE
+            | IDM_TOOL_MD5_GENERATEFROMFILE
+            | IDM_TOOL_MD5_GENERATEINTOCLIPBOARD => format!("{:x}", md5::Md5::digest(&bytes)),
+            IDM_TOOL_SHA1_GENERATE
+            | IDM_TOOL_SHA1_GENERATEFROMFILE
+            | IDM_TOOL_SHA1_GENERATEINTOCLIPBOARD => format!("{:x}", sha1::Sha1::digest(&bytes)),
+            IDM_TOOL_SHA256_GENERATE
+            | IDM_TOOL_SHA256_GENERATEFROMFILE
+            | IDM_TOOL_SHA256_GENERATEINTOCLIPBOARD => {
+                format!("{:x}", sha2::Sha256::digest(&bytes))
+            }
+            _ => format!("{:x}", sha2::Sha512::digest(&bytes)),
+        };
+        if to_clipboard {
+            crate::clipboard::write_text(self.window, &hash)?;
+        } else {
+            // An editable result makes copying a long digest straightforward.
+            let _ = crate::input_dialog::ask(
+                self.window,
+                "Hash Result",
+                "Hash of the supplied bytes:",
+                &hash,
+            )?;
+        }
+        Ok(())
+    }
     fn command(&mut self, command: u32) {
+        if crate::languages::by_command(command).is_some()
+            || self.user_languages.iter().any(|l| l.command == command)
+        {
+            self.languages.insert(self.active_id(), command);
+            self.apply_language();
+            self.caption();
+            return;
+        }
         if self.document().is_read_only() && EDIT_COMMANDS.contains(&command) {
             return;
         }
+        if self.macro_recording
+            && EDIT_COMMANDS.contains(&command)
+            && ![
+                IDM_EDIT_CUT,
+                IDM_EDIT_PASTE,
+                IDM_EDIT_PASTE_AS_HTML,
+                IDM_EDIT_PASTE_AS_RTF,
+            ]
+            .contains(&command)
+        {
+            self.macro_steps.push(crate::macros::Step::Command(command));
+        }
         match command {
+            FORMAT_DOCUMENT | FORMAT_SELECTION => {
+                let (start, end) = control_selection(self.edit);
+                let selection = self.sync_native_selection(start, end);
+                if command == FORMAT_SELECTION && selection.range().is_empty() {
+                    return;
+                }
+                let source = self.document().text();
+                let language = self.language().command;
+                let mut range = if command == FORMAT_DOCUMENT {
+                    0..source.len()
+                } else {
+                    selection.range()
+                };
+                if !matches!(language, IDM_LANG_JSON | IDM_LANG_XML) {
+                    let starts = self.document().line_starts();
+                    range.start = starts[starts
+                        .partition_point(|&start| start <= range.start)
+                        .saturating_sub(1)];
+                    range.end = starts
+                        .get(starts.partition_point(|&start| start < range.end))
+                        .copied()
+                        .unwrap_or(source.len());
+                }
+                let width = self.tab_width.get();
+                let style = self.indentation_style;
+                let ending = self.document().line_ending().as_str();
+                let formatted = match language {
+                    IDM_LANG_JSON => {
+                        crate::formatting::json(&source[range.clone()], width, style, ending)
+                    }
+                    IDM_LANG_XML => {
+                        crate::formatting::xml(&source[range.clone()], width, style, ending)
+                    }
+                    _ => Ok(crate::formatting::reindent(
+                        self.edit,
+                        source,
+                        language,
+                        range.clone(),
+                        width,
+                        style,
+                    )),
+                };
+                match formatted {
+                    Ok(text) => {
+                        if let Err(error) = self.document_mut().replace(range, &text) {
+                            self.report(error);
+                        }
+                        self.refresh();
+                    }
+                    Err(error) => self.report(error),
+                }
+            }
+            IDM_VIEW_FOLDALL
+            | IDM_VIEW_UNFOLDALL
+            | IDM_VIEW_FOLD_CURRENT
+            | IDM_VIEW_UNFOLD_CURRENT => {
+                crate::scintilla::fold(
+                    self.edit,
+                    matches!(command, IDM_VIEW_UNFOLDALL | IDM_VIEW_UNFOLD_CURRENT),
+                    None,
+                    matches!(command, IDM_VIEW_FOLD_CURRENT | IDM_VIEW_UNFOLD_CURRENT),
+                );
+            }
+            IDM_VIEW_FOLD_1..=IDM_VIEW_FOLD_8 => {
+                crate::scintilla::fold(
+                    self.edit,
+                    false,
+                    Some((command - IDM_VIEW_FOLD_1 + 1) as usize),
+                    false,
+                );
+            }
+            IDM_VIEW_UNFOLD_1..=IDM_VIEW_UNFOLD_8 => {
+                crate::scintilla::fold(
+                    self.edit,
+                    true,
+                    Some((command - IDM_VIEW_UNFOLD_1 + 1) as usize),
+                    false,
+                );
+            }
+            IDM_EDIT_EOL2WS | IDM_EDIT_TRIMALL => {
+                let (start, end) = control_selection(self.edit);
+                let selection = self.sync_native_selection(start, end);
+                let range = if selection.range().is_empty() {
+                    0..self.document().text().len()
+                } else {
+                    selection.range()
+                };
+                let text = &self.document().text()[range.clone()];
+                let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
+                let replacement = if command == IDM_EDIT_TRIMALL {
+                    normalized
+                        .split('\n')
+                        .map(|line| line.trim_matches([' ', '\t']))
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                } else {
+                    normalized.replace('\n', " ")
+                };
+                if let Err(error) = self.document_mut().replace(range, &replacement) {
+                    self.report(error);
+                }
+                self.refresh();
+            }
+            IDM_LANG_USER_DLG | IDM_LANG_USER => {
+                if command == IDM_LANG_USER && !self.user_languages.is_empty() {
+                    self.languages
+                        .insert(self.active_id(), self.user_languages[0].command);
+                    self.apply_language();
+                    self.caption();
+                    return;
+                }
+                let result = (|| -> io::Result<()> {
+                    let existing = self
+                        .user_languages
+                        .iter()
+                        .find(|l| l.command == self.language().command);
+                    let Some(mut language) = crate::languages::define(self.window, existing)?
+                    else {
+                        return Ok(());
+                    };
+                    let mut next = self.user_languages.clone();
+                    if let Some(old) = next.iter_mut().find(|l| l.name == language.name) {
+                        language.command = old.command;
+                        *old = language.clone();
+                    } else {
+                        if next.len() >= 500 {
+                            return Err(io::Error::other(
+                                "At most 500 user languages can be defined.",
+                            ));
+                        }
+                        language.command = 62000 + next.len() as u32;
+                        next.push(language.clone());
+                    }
+                    crate::languages::save_user(&next)?;
+                    unsafe {
+                        let menu = GetSubMenu(crate::plugin_host::main_menu(self.window), 5);
+                        for old in &self.user_languages {
+                            DeleteMenu(menu, old.command, MF_BYCOMMAND);
+                        }
+                        for item in &next {
+                            crate::languages::append_language(menu, item);
+                        }
+                    }
+                    self.user_languages = next;
+                    self.languages.insert(self.active_id(), language.command);
+                    self.applied_language = None;
+                    self.apply_language();
+                    self.caption();
+                    Ok(())
+                })();
+                if let Err(error) = result {
+                    self.report(error);
+                }
+            }
+            IDM_LANG_OPENUDLDIR => {
+                let directory = crate::languages::user_directory();
+                let result = std::fs::create_dir_all(&directory).and_then(|_| {
+                    let result = unsafe {
+                        windows_sys::Win32::UI::Shell::ShellExecuteW(
+                            self.window,
+                            w!("open"),
+                            wide(&directory.to_string_lossy()).as_ptr(),
+                            null(),
+                            null(),
+                            SW_SHOWNORMAL,
+                        )
+                    };
+                    if result as isize <= 32 {
+                        Err(io::Error::other("Could not open the user language folder"))
+                    } else {
+                        Ok(())
+                    }
+                });
+                if let Err(error) = result {
+                    self.report(error);
+                }
+            }
+            IDM_VIEW_ALWAYSONTOP => unsafe {
+                let top = GetWindowLongPtrW(self.window, GWL_EXSTYLE) as u32 & WS_EX_TOPMOST == 0;
+                SetWindowPos(
+                    self.window,
+                    if top { HWND_TOPMOST } else { HWND_NOTOPMOST },
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+                );
+                CheckMenuItem(
+                    crate::plugin_host::main_menu(self.window),
+                    command,
+                    MF_BYCOMMAND | if top { MF_CHECKED } else { MF_UNCHECKED },
+                );
+            },
+            IDM_VIEW_FULLSCREENTOGGLE => unsafe {
+                if let Some((style, bounds)) = self.fullscreen.take() {
+                    SetWindowLongPtrW(self.window, GWL_STYLE, style);
+                    SetWindowPos(
+                        self.window,
+                        std::ptr::null_mut(),
+                        bounds.left,
+                        bounds.top,
+                        bounds.right - bounds.left,
+                        bounds.bottom - bounds.top,
+                        SWP_NOZORDER | SWP_FRAMECHANGED,
+                    );
+                } else {
+                    let mut bounds = RECT::default();
+                    GetWindowRect(self.window, &mut bounds);
+                    let style = GetWindowLongPtrW(self.window, GWL_STYLE);
+                    let mut monitor = MONITORINFO {
+                        cbSize: size_of::<MONITORINFO>() as u32,
+                        ..Default::default()
+                    };
+                    if GetMonitorInfoW(
+                        MonitorFromWindow(self.window, MONITOR_DEFAULTTONEAREST),
+                        &mut monitor,
+                    ) != 0
+                    {
+                        self.fullscreen = Some((style, bounds));
+                        SetWindowLongPtrW(
+                            self.window,
+                            GWL_STYLE,
+                            style & !(WS_OVERLAPPEDWINDOW as isize),
+                        );
+                        let rect = monitor.rcMonitor;
+                        SetWindowPos(
+                            self.window,
+                            std::ptr::null_mut(),
+                            rect.left,
+                            rect.top,
+                            rect.right - rect.left,
+                            rect.bottom - rect.top,
+                            SWP_NOZORDER | SWP_FRAMECHANGED,
+                        );
+                    }
+                }
+                CheckMenuItem(
+                    crate::plugin_host::main_menu(self.window),
+                    command,
+                    MF_BYCOMMAND
+                        | if self.fullscreen.is_some() {
+                            MF_CHECKED
+                        } else {
+                            MF_UNCHECKED
+                        },
+                );
+            },
+            IDM_VIEW_TAB1..=IDM_VIEW_TAB9 => {
+                let id = self
+                    .workspace
+                    .buffers()
+                    .nth((command - IDM_VIEW_TAB1) as usize)
+                    .map(|(id, _)| id);
+                if let Some(id) = id {
+                    self.workspace.activate(id);
+                    self.refresh();
+                }
+            }
+            IDM_VIEW_TAB_START | IDM_VIEW_TAB_END => {
+                while self.workspace.move_active(command == IDM_VIEW_TAB_END) {}
+                self.refresh_tabs();
+            }
+            IDM_EDIT_DELETE | IDM_EDIT_REDACT_SELECTION => {
+                let (start, end) = control_selection(self.edit);
+                let mut range = self.sync_native_selection(start, end).range();
+                if command == IDM_EDIT_DELETE && range.is_empty() {
+                    if self.document().text()[range.start..].starts_with("\r\n") {
+                        range.end += 2;
+                    } else if let Some(ch) = self.document().text()[range.start..].chars().next() {
+                        range.end += ch.len_utf8();
+                    }
+                }
+                let replacement = if command == IDM_EDIT_REDACT_SELECTION {
+                    let bullet = unsafe { GetKeyState(VK_SHIFT as i32) < 0 };
+                    let unicode = matches!(
+                        self.document().encoding(),
+                        Encoding::Utf8
+                            | Encoding::Utf8Bom
+                            | Encoding::Utf16Le
+                            | Encoding::Utf16Be
+                            | Encoding::Utf16LeNoBom
+                            | Encoding::Utf16BeNoBom
+                    );
+                    let mask = match (unicode, bullet) {
+                        (true, true) => '●',
+                        (true, false) => '█',
+                        (false, true) => '.',
+                        _ => '#',
+                    };
+                    self.document().text()[range.clone()]
+                        .chars()
+                        .map(|ch| if ch == '\r' || ch == '\n' { ch } else { mask })
+                        .collect::<String>()
+                } else {
+                    String::new()
+                };
+                if let Err(error) = self.document_mut().replace(range, &replacement) {
+                    self.report(error);
+                }
+                self.refresh();
+            }
+            IDM_EDIT_AUTOCOMPLETE_CURRENTFILE | IDM_EDIT_AUTOCOMPLETE => {
+                let (start, end) = control_selection(self.edit);
+                let selection = self.sync_native_selection(start, end);
+                let text = self.document().text();
+                let caret = selection.caret;
+                let start = text[..caret]
+                    .char_indices()
+                    .rev()
+                    .find(|(_, ch)| !ch.is_alphanumeric() && *ch != '_')
+                    .map_or(0, |(at, ch)| at + ch.len_utf8());
+                let prefix = &text[start..caret];
+                if prefix.is_empty() {
+                    return;
+                }
+                let words: std::collections::BTreeSet<_> = text
+                    .split(|ch: char| !ch.is_alphanumeric() && ch != '_')
+                    .chain(
+                        if command == IDM_EDIT_AUTOCOMPLETE {
+                            self.language().keywords.as_str()
+                        } else {
+                            ""
+                        }
+                        .split_whitespace(),
+                    )
+                    .filter(|word| word.starts_with(prefix) && word.len() > prefix.len())
+                    .map(str::to_owned)
+                    .collect();
+                let words: Vec<_> = words.into_iter().take(50).collect();
+                unsafe {
+                    let menu = CreatePopupMenu();
+                    for (index, word) in words.iter().enumerate() {
+                        AppendMenuW(menu, MF_STRING, index + 1, wide(word).as_ptr());
+                    }
+                    let mut point = POINT::default();
+                    GetCaretPos(&mut point);
+                    ClientToScreen(self.edit, &mut point);
+                    let choice = TrackPopupMenu(
+                        menu,
+                        TPM_RETURNCMD,
+                        point.x,
+                        point.y + 20,
+                        0,
+                        self.window,
+                        null(),
+                    );
+                    DestroyMenu(menu);
+                    if choice > 0 {
+                        if let Some(word) = words.get(choice as usize - 1) {
+                            if let Err(error) = self.document_mut().replace(start..caret, word) {
+                                self.report(error);
+                            }
+                            self.refresh();
+                        }
+                    }
+                }
+            }
+            IDM_EDIT_OPENSELECTEDFILETOEDIT | IDM_EDIT_OPENSELECTEDFILEFOLDERINEXPLORER => {
+                let (start, end) = control_selection(self.edit);
+                let range = self.sync_native_selection(start, end).range();
+                let selected = self.document().text()[range].trim().trim_matches('"');
+                if selected.is_empty() {
+                    return;
+                }
+                let mut path = PathBuf::from(selected);
+                if path.is_relative() {
+                    if let Some(parent) = self.document().path().and_then(|p| p.parent()) {
+                        path = parent.join(path);
+                    }
+                }
+                let result = if command == IDM_EDIT_OPENSELECTEDFILETOEDIT {
+                    self.open(&path)
+                } else {
+                    crate::file_launch::launch(
+                        self.window,
+                        &path,
+                        crate::file_launch::Action::Reveal,
+                    )
+                };
+                if let Err(error) = result {
+                    self.report(error);
+                }
+            }
+            IDM_FILE_RENAME => {
+                let result = (|| -> io::Result<()> {
+                    let Some(original) = self.document().path().map(Path::to_owned) else {
+                        self.save(true);
+                        return Ok(());
+                    };
+                    let Some(value) = crate::input_dialog::ask(
+                        self.window,
+                        "Rename",
+                        "New file name:",
+                        &original.file_name().unwrap_or_default().to_string_lossy(),
+                    )?
+                    else {
+                        return Ok(());
+                    };
+                    let name = Path::new(&value);
+                    if name.components().count() != 1
+                        || value.trim().is_empty()
+                        || value.contains(['/', '\\', ':'])
+                        || value == "."
+                        || value == ".."
+                    {
+                        return Err(io::Error::other("Enter a file name without a directory"));
+                    }
+                    let destination = original.with_file_name(name);
+                    if destination == original {
+                        return Ok(());
+                    }
+                    if self
+                        .workspace
+                        .buffers()
+                        .any(|(_, doc)| doc.path() == Some(destination.as_path()))
+                    {
+                        return Err(io::Error::other("The destination is open in another tab"));
+                    }
+                    self.document_mut().rename_with(&destination, |from, to| {
+                        use std::os::windows::ffi::OsStrExt;
+                        let from: Vec<u16> =
+                            from.as_os_str().encode_wide().chain(Some(0)).collect();
+                        let to: Vec<u16> = to.as_os_str().encode_wide().chain(Some(0)).collect();
+                        if unsafe {
+                            windows_sys::Win32::Storage::FileSystem::MoveFileW(
+                                from.as_ptr(),
+                                to.as_ptr(),
+                            )
+                        } == 0
+                        {
+                            Err(io::Error::last_os_error())
+                        } else {
+                            Ok(())
+                        }
+                    })?;
+                    self.refresh();
+                    Ok(())
+                })();
+                if let Err(error) = result {
+                    self.report(error);
+                }
+            }
+            IDM_FILE_DELETE => {
+                if let Some(path) = self.document().path().map(Path::to_owned) {
+                    unsafe {
+                        if MessageBoxW(
+                            self.window,
+                            wide(&format!(
+                                "Move {} to the Recycle Bin?\r\nThe open buffer will be retained.",
+                                path.display()
+                            ))
+                            .as_ptr(),
+                            w!("Delete File"),
+                            MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2,
+                        ) == IDYES
+                        {
+                            use std::os::windows::ffi::OsStrExt;
+                            let path: Vec<u16> =
+                                path.as_os_str().encode_wide().chain([0, 0]).collect();
+                            let mut operation = windows_sys::Win32::UI::Shell::SHFILEOPSTRUCTW {
+                                hwnd: self.window,
+                                wFunc: windows_sys::Win32::UI::Shell::FO_DELETE,
+                                pFrom: path.as_ptr(),
+                                fFlags: (windows_sys::Win32::UI::Shell::FOF_ALLOWUNDO
+                                    | windows_sys::Win32::UI::Shell::FOF_NOCONFIRMATION)
+                                    as u16,
+                                ..Default::default()
+                            };
+                            let result =
+                                windows_sys::Win32::UI::Shell::SHFileOperationW(&mut operation);
+                            if result == 0 && operation.fAnyOperationsAborted == 0 {
+                                self.document_mut().mark_disk_deleted();
+                                self.document_mut().set_file_read_only(false);
+                                self.refresh();
+                            } else if result != 0 {
+                                self.report(format!("Could not recycle the file ({result})"));
+                            }
+                        }
+                    }
+                }
+            }
+            IDM_FILE_PRINT | IDM_FILE_PRINTNOW => {
+                let (start, end) = control_selection(self.edit);
+                let range = self.sync_native_selection(start, end).range();
+                let title = self
+                    .document()
+                    .path()
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "Untitled".to_owned());
+                let text = self.document().text();
+                if let Err(error) = crate::printing::print(
+                    self.window,
+                    &title,
+                    text,
+                    (!range.is_empty()).then(|| &text[range]),
+                    command == IDM_FILE_PRINTNOW,
+                    self.tab_width.get(),
+                ) {
+                    self.report(error);
+                }
+            }
+            IDM_ABOUT | IDM_DEBUGINFO | IDM_CMDLINEARGUMENTS => {
+                let message = match command {
+                    IDM_ABOUT => "Notepad++ Rust\r\nAn independent GPL-3.0-or-later rewrite.\r\nBased on the supplied Notepad++ source.\r\nThis application is still under development.".to_owned(),
+                    IDM_DEBUGINFO => format!("Notepad++ Rust {}\r\nOS: {}\r\nArchitecture: {}\r\nExecutable: {}\r\nOpen documents: {}", env!("CARGO_PKG_VERSION"), std::env::consts::OS, std::env::consts::ARCH, std::env::current_exe().unwrap_or_default().display(), self.workspace.buffers().count()),
+                    _ => "Usage: npp-windows.exe [file ...]\r\nOpens each supplied file in a tab. Quote paths containing spaces.".to_owned(),
+                };
+                unsafe {
+                    MessageBoxW(
+                        self.window,
+                        wide(&message).as_ptr(),
+                        w!("Notepad++ Rust"),
+                        MB_OK | MB_ICONINFORMATION,
+                    );
+                }
+            }
+            IDM_HOMESWEETHOME
+            | IDM_PROJECTPAGE
+            | IDM_ONLINEDOCUMENT
+            | IDM_FORUM
+            | IDM_LANG_UDLCOLLECTION_PROJECT_SITE => {
+                let url = match command {
+                    IDM_LANG_UDLCOLLECTION_PROJECT_SITE => {
+                        "https://github.com/notepad-plus-plus/userDefinedLanguages"
+                    }
+                    IDM_HOMESWEETHOME => "https://notepad-plus-plus.org/",
+                    IDM_PROJECTPAGE => "https://github.com/notepad-plus-plus/notepad-plus-plus",
+                    IDM_ONLINEDOCUMENT => "https://npp-user-manual.org/",
+                    _ => "https://community.notepad-plus-plus.org/",
+                };
+                unsafe {
+                    let result = windows_sys::Win32::UI::Shell::ShellExecuteW(
+                        self.window,
+                        w!("open"),
+                        wide(url).as_ptr(),
+                        null(),
+                        null(),
+                        SW_SHOWNORMAL,
+                    );
+                    if result as usize <= 32 {
+                        self.report("Could not open the browser");
+                    }
+                }
+            }
+            IDM_SETTING_PREFERENCE => {
+                let result = (|| -> io::Result<()> {
+                    if let Some(value) =
+                        crate::preferences::show(self.window, self.current_preferences())?
+                    {
+                        self.apply_preferences(&value)?;
+                        crate::preferences::save(&value)?;
+                    }
+                    Ok(())
+                })();
+                if let Err(error) = result {
+                    self.report(error);
+                }
+            }
+            SHOW_TOOLBAR | SHOW_LINE_NUMBERS => {
+                let id = if command == SHOW_TOOLBAR {
+                    crate::editor_chrome::TOOLBAR
+                } else {
+                    crate::editor_chrome::GUTTER
+                };
+                let hidden = is_control_hidden(self.window, id as usize);
+                unsafe {
+                    ShowWindow(
+                        GetDlgItem(self.window, id),
+                        if hidden { SW_SHOWNA } else { SW_HIDE },
+                    );
+                    CheckMenuItem(
+                        crate::plugin_host::main_menu(self.window),
+                        command,
+                        MF_BYCOMMAND | if hidden { MF_CHECKED } else { MF_UNCHECKED },
+                    );
+                }
+                self.resize();
+            }
+            IDM_VIEW_WRAP => {
+                if let Err(error) = self.toggle_word_wrap() {
+                    self.report(error);
+                }
+            }
+            IDM_MACRO_STARTRECORDINGMACRO => {
+                self.macro_steps.clear();
+                self.macro_recording = true;
+                self.caption();
+            }
+            IDM_MACRO_STOPRECORDINGMACRO => {
+                self.macro_recording = false;
+                self.caption();
+            }
+            IDM_MACRO_PLAYBACKRECORDEDMACRO | IDM_MACRO_RUNMULTIMACRODLG => {
+                self.macro_recording = false;
+                let count = if command == IDM_MACRO_RUNMULTIMACRODLG {
+                    match crate::input_dialog::ask(
+                        self.window,
+                        "Run Macro",
+                        "Number of repetitions (1–10000):",
+                        "1",
+                    ) {
+                        Ok(Some(value)) => match value.parse::<usize>() {
+                            Ok(n) if (1..=10000).contains(&n) => n,
+                            _ => {
+                                self.report("Enter a number from 1 to 10000");
+                                return;
+                            }
+                        },
+                        Ok(None) => return,
+                        Err(error) => {
+                            self.report(error);
+                            return;
+                        }
+                    }
+                } else {
+                    1
+                };
+                let steps = self.macro_steps.clone();
+                for _ in 0..count {
+                    for step in &steps {
+                        match step {
+                            crate::macros::Step::Command(id) => {
+                                if EDIT_COMMANDS.contains(id) {
+                                    self.command(*id);
+                                }
+                            }
+                            crate::macros::Step::Edit {
+                                offset,
+                                remove,
+                                insert,
+                            } => {
+                                if let Err(error) = crate::macros::apply(
+                                    self.document_mut(),
+                                    *offset,
+                                    *remove,
+                                    insert,
+                                ) {
+                                    self.report(error);
+                                    self.refresh();
+                                    return;
+                                }
+                                self.refresh();
+                            }
+                        }
+                    }
+                }
+            }
+            IDM_MACRO_SAVECURRENTMACRO | LOAD_MACRO => {
+                let save = command == IDM_MACRO_SAVECURRENTMACRO;
+                let result = (|| -> io::Result<()> {
+                    let Some(path) = file_dialog_titled(
+                        self.window,
+                        save,
+                        Some(if save { "Save Macro" } else { "Load Macro" }),
+                    )?
+                    else {
+                        return Ok(());
+                    };
+                    if save {
+                        atomic_write(
+                            &path,
+                            &serde_json::to_vec_pretty(&self.macro_steps)
+                                .map_err(io::Error::other)?,
+                        )?;
+                    } else {
+                        let steps: Vec<crate::macros::Step> =
+                            serde_json::from_slice(&std::fs::read(path)?)
+                                .map_err(io::Error::other)?;
+
+                        self.macro_steps = steps;
+                        self.macro_recording = false;
+                    }
+                    Ok(())
+                })();
+                if let Err(error) = result {
+                    self.report(error);
+                }
+            }
+            IDM_EXECUTE => {
+                let (start, end) = control_selection(self.edit);
+                self.sync_native_selection(start, end);
+                let result = (|| -> io::Result<()> {
+                    let Some(value) = crate::input_dialog::ask(
+                        self.window,
+                        "Run",
+                        "Command (supports $(FULL_CURRENT_PATH), $(CURRENT_DIRECTORY), $(FILE_NAME), $(CURRENT_WORD)):",
+                        &self.run_command,
+                    )?
+                    else {
+                        return Ok(());
+                    };
+                    self.run_command = value.clone();
+                    let text = self.document().text();
+                    let mut word = self.document().selection().range();
+                    if word.is_empty() {
+                        word.start = text[..word.start]
+                            .char_indices()
+                            .rev()
+                            .find(|(_, ch)| !ch.is_alphanumeric() && *ch != '_')
+                            .map_or(0, |(at, ch)| at + ch.len_utf8());
+                        word.end += text[word.end..]
+                            .chars()
+                            .take_while(|ch| ch.is_alphanumeric() || *ch == '_')
+                            .map(char::len_utf8)
+                            .sum::<usize>();
+                    }
+                    let path = self.document().path();
+                    let directory = path
+                        .and_then(|p| p.parent())
+                        .map(|p| p.to_string_lossy().into_owned())
+                        .unwrap_or_default();
+                    let value = value
+                        .replace(
+                            "$(FULL_CURRENT_PATH)",
+                            &path
+                                .map(|p| p.to_string_lossy().into_owned())
+                                .unwrap_or_default(),
+                        )
+                        .replace("$(CURRENT_DIRECTORY)", &directory)
+                        .replace(
+                            "$(FILE_NAME)",
+                            &path
+                                .and_then(|p| p.file_name())
+                                .map(|p| p.to_string_lossy().into_owned())
+                                .unwrap_or_default(),
+                        )
+                        .replace("$(CURRENT_WORD)", &text[word]);
+                    if value.trim().is_empty() {
+                        return Ok(());
+                    }
+                    use std::os::windows::process::CommandExt;
+                    let mut process = std::process::Command::new("cmd.exe");
+                    process
+                        .args(["/D", "/S", "/C", &value])
+                        .creation_flags(0x08000000);
+                    if !directory.is_empty() {
+                        process.current_dir(directory);
+                    }
+                    process.spawn()?;
+                    Ok(())
+                })();
+                if let Err(error) = result {
+                    self.report(error);
+                }
+            }
+            IDM_EDIT_BLOCK_COMMENT
+            | IDM_EDIT_BLOCK_COMMENT_SET
+            | IDM_EDIT_BLOCK_UNCOMMENT
+            | IDM_EDIT_STREAM_COMMENT
+            | IDM_EDIT_STREAM_UNCOMMENT => {
+                let (start, end) = control_selection(self.edit);
+                self.sync_native_selection(start, end);
+                let language = self.language().clone();
+                let marker = language.line.as_str();
+                let result =
+                    if command == IDM_EDIT_STREAM_COMMENT || command == IDM_EDIT_STREAM_UNCOMMENT {
+                        let (open, close) = (language.open.as_str(), language.close.as_str());
+                        if open.is_empty() || close.is_empty() {
+                            return;
+                        }
+                        self.document_mut().comment_selection(
+                            open,
+                            close,
+                            command == IDM_EDIT_STREAM_UNCOMMENT,
+                        )
+                    } else {
+                        if marker.is_empty() {
+                            return;
+                        }
+                        self.document_mut().comment_lines(
+                            marker,
+                            match command {
+                                IDM_EDIT_BLOCK_COMMENT_SET => Some(true),
+                                IDM_EDIT_BLOCK_UNCOMMENT => Some(false),
+                                _ => None,
+                            },
+                        )
+                    };
+                if let Err(error) = result {
+                    self.report(error);
+                }
+                self.refresh();
+            }
+            IDM_TOOL_MD5_GENERATE
+            | IDM_TOOL_MD5_GENERATEFROMFILE
+            | IDM_TOOL_MD5_GENERATEINTOCLIPBOARD
+            | IDM_TOOL_SHA1_GENERATE
+            | IDM_TOOL_SHA1_GENERATEFROMFILE
+            | IDM_TOOL_SHA1_GENERATEINTOCLIPBOARD
+            | IDM_TOOL_SHA256_GENERATE
+            | IDM_TOOL_SHA256_GENERATEFROMFILE
+            | IDM_TOOL_SHA256_GENERATEINTOCLIPBOARD
+            | IDM_TOOL_SHA512_GENERATE
+            | IDM_TOOL_SHA512_GENERATEFROMFILE
+            | IDM_TOOL_SHA512_GENERATEINTOCLIPBOARD => {
+                if let Err(error) = self.hash_command(command) {
+                    self.report(error);
+                }
+            }
+            IDM_WINDOW_SORT_FN_ASC
+            | IDM_WINDOW_SORT_FN_DSC
+            | IDM_WINDOW_SORT_FP_ASC
+            | IDM_WINDOW_SORT_FP_DSC
+            | IDM_WINDOW_SORT_FT_ASC
+            | IDM_WINDOW_SORT_FT_DSC
+            | IDM_WINDOW_SORT_FS_ASC
+            | IDM_WINDOW_SORT_FS_DSC
+            | IDM_WINDOW_SORT_FD_ASC
+            | IDM_WINDOW_SORT_FD_DSC => {
+                let original = self.active_id();
+                let mut entries: Vec<_> = self
+                    .workspace
+                    .buffers()
+                    .map(|(id, doc)| {
+                        let path = doc
+                            .path()
+                            .map(|p| p.to_string_lossy().into_owned())
+                            .unwrap_or_else(|| {
+                                self.workspace
+                                    .untitled_name(id)
+                                    .unwrap_or_default()
+                                    .to_owned()
+                            });
+                        let name = Path::new(&path)
+                            .file_name()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                            .to_lowercase();
+                        let extension = Path::new(&path)
+                            .extension()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                            .to_lowercase();
+                        let modified = doc
+                            .path()
+                            .and_then(|p| std::fs::metadata(p).ok())
+                            .and_then(|m| m.modified().ok());
+                        (
+                            id,
+                            name,
+                            path.to_lowercase(),
+                            extension,
+                            doc.text().len(),
+                            modified,
+                        )
+                    })
+                    .collect();
+                entries.sort_by(|a, b| match command {
+                    IDM_WINDOW_SORT_FP_ASC | IDM_WINDOW_SORT_FP_DSC => a.2.cmp(&b.2),
+                    IDM_WINDOW_SORT_FT_ASC | IDM_WINDOW_SORT_FT_DSC => a.3.cmp(&b.3),
+                    IDM_WINDOW_SORT_FS_ASC | IDM_WINDOW_SORT_FS_DSC => a.4.cmp(&b.4),
+                    IDM_WINDOW_SORT_FD_ASC | IDM_WINDOW_SORT_FD_DSC => a.5.cmp(&b.5),
+                    _ => a.1.cmp(&b.1),
+                });
+                if [
+                    IDM_WINDOW_SORT_FN_DSC,
+                    IDM_WINDOW_SORT_FP_DSC,
+                    IDM_WINDOW_SORT_FT_DSC,
+                    IDM_WINDOW_SORT_FS_DSC,
+                    IDM_WINDOW_SORT_FD_DSC,
+                ]
+                .contains(&command)
+                {
+                    entries.reverse();
+                }
+                for entry in entries.iter().rev() {
+                    self.workspace.activate(entry.0);
+                    while self.workspace.move_active(false) {}
+                }
+                self.workspace.activate(original);
+                self.refresh_tabs();
+            }
             IDM_VIEW_ZOOMIN | IDM_VIEW_ZOOMOUT | IDM_VIEW_ZOOMRESTORE => {
                 let zoom = match command {
                     IDM_VIEW_ZOOMIN => self.zoom + 1,
@@ -2017,13 +3384,28 @@ impl App {
             }
             INSERT_NEWLINE => {
                 let (start, end) = control_selection(self.edit);
-                self.sync_native_selection(start, end);
-                let (basic, width, style) = (
-                    self.basic_auto_indent,
-                    self.tab_width,
-                    self.indentation_style,
-                );
-                if let Err(error) = self.document_mut().insert_newline(basic, width, style) {
+                let selection = self.sync_native_selection(start, end);
+                let (width, style) = (self.tab_width, self.indentation_style);
+                if self.basic_auto_indent {
+                    let (replacement, caret) = crate::formatting::newline(
+                        self.edit,
+                        self.document().text(),
+                        selection.range(),
+                        self.language().command,
+                        width.get(),
+                        style,
+                        self.document().line_ending().as_str(),
+                    );
+                    if let Err(error) = self.document_mut().replace(selection.range(), &replacement)
+                    {
+                        self.report(error);
+                    } else {
+                        let _ = self.document_mut().select(npp_editor_core::Selection {
+                            anchor: caret,
+                            caret,
+                        });
+                    }
+                } else if let Err(error) = self.document_mut().insert_newline(false, width, style) {
                     self.report(error);
                 }
                 self.refresh();
@@ -2078,6 +3460,9 @@ impl App {
             }
             SEARCH_WRAP => {
                 self.search_options.wrap = !self.search_options.wrap;
+                if let Some(dialog) = &self.search_dialog {
+                    dialog.set_wrap(self.search_options.wrap);
+                }
                 // SAFETY: Update this window's retained menu.
                 unsafe {
                     CheckMenuItem(
@@ -2156,7 +3541,38 @@ impl App {
                     Err(error) => self.report(error),
                 }
             }
+            SEARCH_REGEX => {
+                self.search_options.mode = if self.search_options.mode == SearchMode::Regex {
+                    SearchMode::Normal
+                } else {
+                    SearchMode::Regex
+                };
+                unsafe {
+                    let menu = crate::plugin_host::main_menu(self.window);
+                    CheckMenuItem(
+                        menu,
+                        SEARCH_REGEX,
+                        MF_BYCOMMAND
+                            | if self.search_options.mode == SearchMode::Regex {
+                                MF_CHECKED
+                            } else {
+                                MF_UNCHECKED
+                            },
+                    );
+                    CheckMenuItem(menu, SEARCH_EXTENDED, MF_BYCOMMAND | MF_UNCHECKED);
+                }
+                if let Some(dialog) = &self.search_dialog {
+                    dialog.set_mode(self.search_options.mode);
+                }
+            }
             SEARCH_EXTENDED => {
+                unsafe {
+                    CheckMenuItem(
+                        crate::plugin_host::main_menu(self.window),
+                        SEARCH_REGEX,
+                        MF_BYCOMMAND | MF_UNCHECKED,
+                    );
+                }
                 self.search_options.mode = if self.search_options.mode == SearchMode::Normal {
                     SearchMode::Extended
                 } else {
@@ -2824,23 +4240,70 @@ impl App {
                     }
                 }
             }
-            IDM_EDIT_CUT | IDM_EDIT_COPY | IDM_EDIT_PASTE | IDM_EDIT_SELECTALL => {
-                // SAFETY: Standard edit-control messages, no pointer payloads.
-                unsafe {
-                    match command {
-                        IDM_EDIT_CUT => {
-                            SendMessageW(self.edit, WM_CUT, 0, 0);
+            IDM_EDIT_SELECTALL => unsafe {
+                SendMessageW(self.edit, EM_SETSEL, 0, -1);
+            },
+            IDM_EDIT_CUT
+            | IDM_EDIT_COPY
+            | IDM_EDIT_PASTE
+            | IDM_EDIT_PASTE_AS_HTML
+            | IDM_EDIT_PASTE_AS_RTF => {
+                let (start, end) = control_selection(self.edit);
+                let selection = self.sync_native_selection(start, end);
+                let range = selection.range();
+                let result = (|| -> io::Result<()> {
+                    if command == IDM_EDIT_COPY || command == IDM_EDIT_CUT {
+                        if range.is_empty() {
+                            return Ok(());
                         }
-                        IDM_EDIT_COPY => {
-                            SendMessageW(self.edit, WM_COPY, 0, 0);
-                        }
-                        IDM_EDIT_PASTE => {
-                            SendMessageW(self.edit, WM_PASTE, 0, 0);
-                        }
-                        _ => {
-                            SendMessageW(self.edit, EM_SETSEL, 0, -1);
+                        crate::clipboard::write_text(
+                            self.window,
+                            &self.document().text()[range.clone()],
+                        )?;
+                        if command == IDM_EDIT_COPY {
+                            return Ok(());
                         }
                     }
+                    let replacement = if command == IDM_EDIT_CUT {
+                        String::new()
+                    } else if command == IDM_EDIT_PASTE {
+                        let Some(text) = crate::clipboard::read_text(self.window)? else {
+                            return Ok(());
+                        };
+                        self.document().line_ending().convert(&text)
+                    } else {
+                        let format = if command == IDM_EDIT_PASTE_AS_HTML {
+                            "HTML Format"
+                        } else {
+                            "Rich Text Format"
+                        };
+                        let Some(bytes) = crate::clipboard::read_registered(self.window, format)?
+                        else {
+                            return Ok(());
+                        };
+                        let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
+                        String::from_utf8(bytes[..end].to_vec()).map_err(io::Error::other)?
+                    };
+                    let before = self
+                        .macro_recording
+                        .then(|| self.document().text().to_owned());
+                    self.document_mut()
+                        .replace(range, &replacement)
+                        .map_err(io::Error::other)?;
+                    if let Some(before) = before {
+                        if let Some(step) = crate::macros::difference(
+                            &before,
+                            self.document().text(),
+                            selection.caret,
+                        ) {
+                            self.macro_steps.push(step);
+                        }
+                    }
+                    self.refresh();
+                    Ok(())
+                })();
+                if let Err(error) = result {
+                    self.report(error);
                 }
             }
             IDM_FORMAT_TODOS | IDM_FORMAT_TOUNIX | IDM_FORMAT_TOMAC => {
@@ -2888,6 +4351,31 @@ impl App {
                 return true;
             };
             match event {
+                Event::LiteralCharacter(ch) => {
+                    if self.document().is_read_only() {
+                        continue;
+                    }
+                    let (start, end) = control_selection(self.edit);
+                    let selection = self.sync_native_selection(start, end);
+                    let before = self
+                        .macro_recording
+                        .then(|| self.document().text().to_owned());
+                    if let Err(error) = self
+                        .document_mut()
+                        .replace(selection.range(), &ch.to_string())
+                    {
+                        self.report(error);
+                    } else if let Some(before) = before {
+                        if let Some(step) = crate::macros::difference(
+                            &before,
+                            self.document().text(),
+                            selection.caret,
+                        ) {
+                            self.macro_steps.push(step);
+                        }
+                    }
+                    self.refresh();
+                }
                 Event::HorizontalWheel(delta, horizontal) => {
                     let mut characters = 0u32;
                     // SAFETY: SPI writes one UINT, and EM_LINESCROLL takes a
@@ -3047,6 +4535,35 @@ impl App {
                     }
                 }
                 Event::Search(request) => self.search_request(request),
+                Event::SearchMode(mode) => {
+                    self.search_options.mode = mode;
+                    if let Some(dialog) = &self.search_dialog {
+                        dialog.set_mode(mode);
+                    }
+                    unsafe {
+                        for (id, checked) in [
+                            (SEARCH_REGEX, mode == SearchMode::Regex),
+                            (SEARCH_EXTENDED, mode == SearchMode::Extended),
+                        ] {
+                            CheckMenuItem(
+                                crate::plugin_host::main_menu(self.window),
+                                id,
+                                MF_BYCOMMAND | if checked { MF_CHECKED } else { MF_UNCHECKED },
+                            );
+                        }
+                    }
+                }
+                Event::SearchTab(command, needle) => {
+                    self.search_text = needle.clone();
+                    self.command(command);
+                    if command == IDM_SEARCH_FINDINFILES {
+                        if let Some(dialog) = &self.find_files {
+                            dialog.set_needle(&needle);
+                        }
+                    } else if let Some(dialog) = &self.search_dialog {
+                        dialog.set_query_text(&needle);
+                    }
+                }
                 Event::GoToRefresh => {
                     if let Some(dialog) = &self.goto_dialog {
                         dialog.update(self.document());
@@ -3070,7 +4587,23 @@ impl App {
                     self.sync_native_selection(start, end);
                     self.caption();
                 }
+                Event::NativeChanged => {
+                    let (start, end) = control_selection(self.edit);
+                    EVENTS.with_borrow_mut(|events| {
+                        events.push_front(Event::Changed(
+                            crate::scintilla::text(self.edit),
+                            start,
+                            end,
+                        ))
+                    });
+                }
                 Event::Changed(text, start, end) => {
+                    let recording = self.macro_recording.then(|| {
+                        (
+                            self.document().text().to_owned(),
+                            self.document().selection().caret,
+                        )
+                    });
                     let id = self.active_id();
                     if let Err(e) = self
                         .projection
@@ -3081,16 +4614,50 @@ impl App {
                         continue;
                     }
                     self.projection = Projection::new(self.document().text());
+                    if let Some((before, caret)) = recording {
+                        if let Some(step) =
+                            crate::macros::difference(&before, self.document().text(), caret)
+                        {
+                            self.macro_steps.push(step);
+                        }
+                    }
                     let selection = self.projection.selection(start, end);
                     let _ = self.document_mut().select(selection);
                     self.caption();
                     self.refresh_tabs();
                 }
                 Event::Tab(index) => {
+                    let (start, end) = control_selection(self.edit);
+                    self.sync_native_selection(start, end);
                     let id = self.workspace.buffers().nth(index).map(|(id, _)| id);
                     if let Some(id) = id {
                         self.workspace.activate(id);
                         self.refresh();
+                        unsafe {
+                            SetFocus(self.edit);
+                        }
+                    }
+                }
+                Event::CloseTab(index) => {
+                    let id = self.workspace.buffers().nth(index).map(|(id, _)| id);
+                    if let Some(id) = id {
+                        self.close_documents(vec![id], |app| app.confirm_close());
+                        unsafe {
+                            SetFocus(self.edit);
+                        }
+                    }
+                }
+                Event::MoveTab(from, to) => {
+                    let id = self.workspace.buffers().nth(from).map(|(id, _)| id);
+                    if let Some(id) = id {
+                        self.workspace.activate(id);
+                        for _ in 0..from.abs_diff(to) {
+                            self.workspace.move_active(to > from);
+                        }
+                        self.refresh();
+                        unsafe {
+                            SetFocus(self.edit);
+                        }
                     }
                 }
                 Event::Close => {
@@ -3286,6 +4853,8 @@ unsafe fn create_menu() -> HMENU {
                 MenuEntry::Command(IDM_FILE_SAVEAS, "Save &As...\tCtrl+Shift+S"),
                 MenuEntry::Command(IDM_FILE_SAVECOPYAS, "Save a Cop&y As..."),
                 MenuEntry::Command(IDM_FILE_SAVEALL, "Sa&ve All"),
+                MenuEntry::Command(IDM_FILE_RENAME, "Rename…"),
+                MenuEntry::Command(IDM_FILE_DELETE, "Delete from Disk…"),
                 MenuEntry::Command(IDM_FILE_CLOSE, "&Close\tCtrl+W"),
                 MenuEntry::Command(IDM_FILE_CLOSEALL, "Clos&e All"),
                 MenuEntry::Popup(
@@ -3309,6 +4878,9 @@ unsafe fn create_menu() -> HMENU {
                 MenuEntry::Command(IDM_FILE_LOADSESSION, "Load Sess&ion..."),
                 MenuEntry::Command(IDM_FILE_SAVESESSION, "Save Sess&ion..."),
                 MenuEntry::Separator,
+                MenuEntry::Command(IDM_FILE_PRINT, "&Print…\tCtrl+P"),
+                MenuEntry::Command(IDM_FILE_PRINTNOW, "Print Now"),
+                MenuEntry::Separator,
                 MenuEntry::Command(IDM_FILE_EXIT, "E&xit"),
             ],
         ),
@@ -3321,7 +4893,46 @@ unsafe fn create_menu() -> HMENU {
                 MenuEntry::Command(IDM_EDIT_CUT, "Cu&t\tCtrl+X"),
                 MenuEntry::Command(IDM_EDIT_COPY, "&Copy\tCtrl+C"),
                 MenuEntry::Command(IDM_EDIT_PASTE, "&Paste\tCtrl+V"),
+                MenuEntry::Popup(
+                    "Paste Special",
+                    &[
+                        MenuEntry::Command(IDM_EDIT_PASTE_AS_HTML, "Paste HTML Content"),
+                        MenuEntry::Command(IDM_EDIT_PASTE_AS_RTF, "Paste RTF Content"),
+                    ],
+                ),
                 MenuEntry::Command(IDM_EDIT_SELECTALL, "&Select All\tCtrl+A"),
+                MenuEntry::Command(IDM_EDIT_DELETE, "Delete"),
+                MenuEntry::Popup(
+                    "Formatting",
+                    &[
+                        MenuEntry::Command(FORMAT_DOCUMENT, "Format Document\tCtrl+Shift+I"),
+                        MenuEntry::Command(FORMAT_SELECTION, "Format Selection"),
+                    ],
+                ),
+                MenuEntry::Popup(
+                    "Auto-Completion",
+                    &[
+                        MenuEntry::Command(IDM_EDIT_AUTOCOMPLETE, "Function / Keyword Completion"),
+                        MenuEntry::Command(
+                            IDM_EDIT_AUTOCOMPLETE_CURRENTFILE,
+                            "Word Completion\tCtrl+Space",
+                        ),
+                    ],
+                ),
+                MenuEntry::Popup(
+                    "On Selection",
+                    &[
+                        MenuEntry::Command(IDM_EDIT_OPENSELECTEDFILETOEDIT, "Open File"),
+                        MenuEntry::Command(
+                            IDM_EDIT_OPENSELECTEDFILEFOLDERINEXPLORER,
+                            "Open Containing Folder in Explorer",
+                        ),
+                        MenuEntry::Command(
+                            IDM_EDIT_REDACT_SELECTION,
+                            "Redact Selection █ (Shift: ●)",
+                        ),
+                    ],
+                ),
                 MenuEntry::Command(IDM_EDIT_BEGINENDSELECT, "Begin/End &Select\tCtrl+Shift+B"),
                 MenuEntry::Separator,
                 MenuEntry::Popup(
@@ -3353,6 +4964,19 @@ unsafe fn create_menu() -> HMENU {
                     &[
                         MenuEntry::Command(IDM_EDIT_INS_TAB, "Increase Line Indent"),
                         MenuEntry::Command(IDM_EDIT_RMV_TAB, "Decrease Line Indent"),
+                    ],
+                ),
+                MenuEntry::Popup(
+                    "Comment / Uncomment",
+                    &[
+                        MenuEntry::Command(
+                            IDM_EDIT_BLOCK_COMMENT,
+                            "Toggle Single Line Comment\tCtrl+Q",
+                        ),
+                        MenuEntry::Command(IDM_EDIT_BLOCK_COMMENT_SET, "Single Line Comment"),
+                        MenuEntry::Command(IDM_EDIT_BLOCK_UNCOMMENT, "Single Line Uncomment"),
+                        MenuEntry::Command(IDM_EDIT_STREAM_COMMENT, "Block Comment"),
+                        MenuEntry::Command(IDM_EDIT_STREAM_UNCOMMENT, "Block Uncomment"),
                     ],
                 ),
                 MenuEntry::Popup(
@@ -3477,6 +5101,8 @@ unsafe fn create_menu() -> HMENU {
                         MenuEntry::Command(IDM_EDIT_TRIMTRAILING, "Trim Trailing Space"),
                         MenuEntry::Command(IDM_EDIT_TRIMLINEHEAD, "Trim Leading Space"),
                         MenuEntry::Command(IDM_EDIT_TRIM_BOTH, "Trim Leading and Trailing Space"),
+                        MenuEntry::Command(IDM_EDIT_EOL2WS, "EOL to Space"),
+                        MenuEntry::Command(IDM_EDIT_TRIMALL, "Trim both and EOL to Space"),
                         MenuEntry::Separator,
                         MenuEntry::Command(IDM_EDIT_TAB2SW, "TAB to Space"),
                         MenuEntry::Command(IDM_EDIT_SW2TAB_ALL, "Space to TAB (All)"),
@@ -3587,6 +5213,7 @@ unsafe fn create_menu() -> HMENU {
                     "Search Options",
                     &[
                         MenuEntry::Command(SEARCH_EXTENDED, "Extended Search Mode"),
+                        MenuEntry::Command(SEARCH_REGEX, "Regular Expression Search Mode"),
                         MenuEntry::Command(SEARCH_COUNT, "Count Occurrences"),
                         MenuEntry::Command(
                             SEARCH_IN_SELECTION,
@@ -3600,6 +5227,41 @@ unsafe fn create_menu() -> HMENU {
         MenuEntry::Popup(
             "&View",
             &[
+                MenuEntry::Command(IDM_VIEW_WRAP, "Word Wrap"),
+                MenuEntry::Separator,
+                MenuEntry::Command(IDM_VIEW_FOLDALL, "Fold All\tAlt+0"),
+                MenuEntry::Command(IDM_VIEW_UNFOLDALL, "Unfold All\tAlt+Shift+0"),
+                MenuEntry::Command(IDM_VIEW_FOLD_CURRENT, "Fold Current Level"),
+                MenuEntry::Command(IDM_VIEW_UNFOLD_CURRENT, "Unfold Current Level"),
+                MenuEntry::Popup(
+                    "Fold Level",
+                    &[
+                        MenuEntry::Command(IDM_VIEW_FOLD_1, "1"),
+                        MenuEntry::Command(IDM_VIEW_FOLD_2, "2"),
+                        MenuEntry::Command(IDM_VIEW_FOLD_3, "3"),
+                        MenuEntry::Command(IDM_VIEW_FOLD_4, "4"),
+                        MenuEntry::Command(IDM_VIEW_FOLD_5, "5"),
+                        MenuEntry::Command(IDM_VIEW_FOLD_6, "6"),
+                        MenuEntry::Command(IDM_VIEW_FOLD_7, "7"),
+                        MenuEntry::Command(IDM_VIEW_FOLD_8, "8"),
+                    ],
+                ),
+                MenuEntry::Popup(
+                    "Unfold Level",
+                    &[
+                        MenuEntry::Command(IDM_VIEW_UNFOLD_1, "1"),
+                        MenuEntry::Command(IDM_VIEW_UNFOLD_2, "2"),
+                        MenuEntry::Command(IDM_VIEW_UNFOLD_3, "3"),
+                        MenuEntry::Command(IDM_VIEW_UNFOLD_4, "4"),
+                        MenuEntry::Command(IDM_VIEW_UNFOLD_5, "5"),
+                        MenuEntry::Command(IDM_VIEW_UNFOLD_6, "6"),
+                        MenuEntry::Command(IDM_VIEW_UNFOLD_7, "7"),
+                        MenuEntry::Command(IDM_VIEW_UNFOLD_8, "8"),
+                    ],
+                ),
+                MenuEntry::Separator,
+                MenuEntry::Command(IDM_VIEW_ALWAYSONTOP, "Always on Top"),
+                MenuEntry::Command(IDM_VIEW_FULLSCREENTOGGLE, "Toggle Full Screen Mode\tF11"),
                 MenuEntry::Popup(
                     "&Zoom",
                     &[
@@ -3625,6 +5287,8 @@ unsafe fn create_menu() -> HMENU {
                         MenuEntry::Separator,
                         MenuEntry::Command(IDM_VIEW_TAB_MOVEFORWARD, "Move Tab Forward"),
                         MenuEntry::Command(IDM_VIEW_TAB_MOVEBACKWARD, "Move Tab Backward"),
+                        MenuEntry::Command(IDM_VIEW_TAB_START, "Move Tab to Start"),
+                        MenuEntry::Command(IDM_VIEW_TAB_END, "Move Tab to End"),
                     ],
                 ),
                 MenuEntry::Separator,
@@ -3632,6 +5296,8 @@ unsafe fn create_menu() -> HMENU {
                 MenuEntry::Popup(
                     "Interface",
                     &[
+                        MenuEntry::Command(SHOW_TOOLBAR, "Show Toolbar"),
+                        MenuEntry::Command(SHOW_LINE_NUMBERS, "Show Line Numbers"),
                         MenuEntry::Command(SHOW_STATUS_BAR, "Show Status Bar"),
                         MenuEntry::Command(SHOW_TAB_BAR, "Show Tab Bar"),
                         MenuEntry::Command(SHOW_MENU_BAR, "Show Menu Bar\tCtrl+Alt+M"),
@@ -3644,7 +5310,7 @@ unsafe fn create_menu() -> HMENU {
                         MenuEntry::Command(TAB_WIDTH_4, "Tab Width: 4"),
                         MenuEntry::Command(TAB_WIDTH_8, "Tab Width: 8"),
                         MenuEntry::Command(INDENT_WITH_SPACES, "Replace Tab with Spaces"),
-                        MenuEntry::Command(BASIC_AUTO_INDENT, "Basic Auto-Indent"),
+                        MenuEntry::Command(BASIC_AUTO_INDENT, "Language-aware Auto-Indent"),
                     ],
                 ),
             ],
@@ -3679,6 +5345,160 @@ unsafe fn create_menu() -> HMENU {
     unsafe {
         let menu = CreateMenu();
         append_menu_entries(menu, entries);
+        append_menu_entries(
+            menu,
+            &[
+                MenuEntry::Popup(
+                    "Se&ttings",
+                    &[MenuEntry::Command(IDM_SETTING_PREFERENCE, "Preferences…")],
+                ),
+                MenuEntry::Popup(
+                    "T&ools",
+                    &[
+                        MenuEntry::Popup(
+                            "MD5",
+                            &[
+                                MenuEntry::Command(IDM_TOOL_MD5_GENERATE, "Generate…"),
+                                MenuEntry::Command(
+                                    IDM_TOOL_MD5_GENERATEFROMFILE,
+                                    "Generate from file…",
+                                ),
+                                MenuEntry::Command(
+                                    IDM_TOOL_MD5_GENERATEINTOCLIPBOARD,
+                                    "Generate from selection into clipboard",
+                                ),
+                            ],
+                        ),
+                        MenuEntry::Popup(
+                            "SHA-1",
+                            &[
+                                MenuEntry::Command(IDM_TOOL_SHA1_GENERATE, "Generate…"),
+                                MenuEntry::Command(
+                                    IDM_TOOL_SHA1_GENERATEFROMFILE,
+                                    "Generate from file…",
+                                ),
+                                MenuEntry::Command(
+                                    IDM_TOOL_SHA1_GENERATEINTOCLIPBOARD,
+                                    "Generate from selection into clipboard",
+                                ),
+                            ],
+                        ),
+                        MenuEntry::Popup(
+                            "SHA-256",
+                            &[
+                                MenuEntry::Command(IDM_TOOL_SHA256_GENERATE, "Generate…"),
+                                MenuEntry::Command(
+                                    IDM_TOOL_SHA256_GENERATEFROMFILE,
+                                    "Generate from file…",
+                                ),
+                                MenuEntry::Command(
+                                    IDM_TOOL_SHA256_GENERATEINTOCLIPBOARD,
+                                    "Generate from selection into clipboard",
+                                ),
+                            ],
+                        ),
+                        MenuEntry::Popup(
+                            "SHA-512",
+                            &[
+                                MenuEntry::Command(IDM_TOOL_SHA512_GENERATE, "Generate…"),
+                                MenuEntry::Command(
+                                    IDM_TOOL_SHA512_GENERATEFROMFILE,
+                                    "Generate from file…",
+                                ),
+                                MenuEntry::Command(
+                                    IDM_TOOL_SHA512_GENERATEINTOCLIPBOARD,
+                                    "Generate from selection into clipboard",
+                                ),
+                            ],
+                        ),
+                    ],
+                ),
+                MenuEntry::Popup(
+                    "&Macro",
+                    &[
+                        MenuEntry::Command(IDM_MACRO_STARTRECORDINGMACRO, "Start Recording"),
+                        MenuEntry::Command(IDM_MACRO_STOPRECORDINGMACRO, "Stop Recording"),
+                        MenuEntry::Command(IDM_MACRO_PLAYBACKRECORDEDMACRO, "Playback"),
+                        MenuEntry::Command(
+                            IDM_MACRO_SAVECURRENTMACRO,
+                            "Save Current Recorded Macro…",
+                        ),
+                        MenuEntry::Command(LOAD_MACRO, "Load Recorded Macro…"),
+                        MenuEntry::Command(
+                            IDM_MACRO_RUNMULTIMACRODLG,
+                            "Run a Macro Multiple Times…",
+                        ),
+                    ],
+                ),
+                MenuEntry::Popup("&Run", &[MenuEntry::Command(IDM_EXECUTE, "Run…")]),
+                MenuEntry::Popup(
+                    "&Window",
+                    &[
+                        MenuEntry::Command(IDM_WINDOW_SORT_FN_ASC, "Name A to Z"),
+                        MenuEntry::Command(IDM_WINDOW_SORT_FN_DSC, "Name Z to A"),
+                        MenuEntry::Command(IDM_WINDOW_SORT_FP_ASC, "Path A to Z"),
+                        MenuEntry::Command(IDM_WINDOW_SORT_FP_DSC, "Path Z to A"),
+                        MenuEntry::Command(IDM_WINDOW_SORT_FT_ASC, "Type A to Z"),
+                        MenuEntry::Command(IDM_WINDOW_SORT_FT_DSC, "Type Z to A"),
+                        MenuEntry::Command(IDM_WINDOW_SORT_FS_ASC, "Content Length Ascending"),
+                        MenuEntry::Command(IDM_WINDOW_SORT_FS_DSC, "Content Length Descending"),
+                        MenuEntry::Command(IDM_WINDOW_SORT_FD_ASC, "Modified Time Ascending"),
+                        MenuEntry::Command(IDM_WINDOW_SORT_FD_DSC, "Modified Time Descending"),
+                    ],
+                ),
+                MenuEntry::Popup(
+                    "&?",
+                    &[
+                        MenuEntry::Command(IDM_CMDLINEARGUMENTS, "Command Line Arguments…"),
+                        MenuEntry::Separator,
+                        MenuEntry::Command(IDM_HOMESWEETHOME, "Notepad++ Home"),
+                        MenuEntry::Command(IDM_PROJECTPAGE, "Notepad++ Project Page"),
+                        MenuEntry::Command(IDM_ONLINEDOCUMENT, "Notepad++ Online User Manual"),
+                        MenuEntry::Command(IDM_FORUM, "Notepad++ Community (Forum)"),
+                        MenuEntry::Separator,
+                        MenuEntry::Command(IDM_DEBUGINFO, "Debug Info…"),
+                        MenuEntry::Command(IDM_ABOUT, "About Notepad++ Rust"),
+                    ],
+                ),
+            ],
+        );
+        let languages = CreatePopupMenu();
+        AppendMenuW(
+            languages,
+            MF_STRING,
+            IDM_LANG_TEXT as usize,
+            w!("None (Normal Text)"),
+        );
+        AppendMenuW(languages, MF_SEPARATOR, 0, null());
+        let mut groups = std::collections::BTreeMap::new();
+        for language in crate::languages::LANGUAGES.iter().skip(1) {
+            let initial = language.name.chars().next().unwrap().to_ascii_uppercase();
+            let group = *groups.entry(initial).or_insert_with(|| {
+                let popup = CreatePopupMenu();
+                AppendMenuW(
+                    languages,
+                    MF_POPUP,
+                    popup as usize,
+                    wide(&initial.to_string()).as_ptr(),
+                );
+                popup
+            });
+            AppendMenuW(
+                group,
+                MF_STRING,
+                language.command as usize,
+                wide(&language.name).as_ptr(),
+            );
+        }
+        crate::languages::append_user_menu(languages);
+        InsertMenuW(
+            menu,
+            5,
+            MF_BYPOSITION | MF_POPUP,
+            languages as usize,
+            w!("&Language"),
+        );
+
         menu
     }
 }
@@ -3691,6 +5511,9 @@ pub fn run() -> io::Result<()> {
         }
     }
     let keys = [
+        (b' ', IDM_EDIT_AUTOCOMPLETE_CURRENTFILE),
+        (b'P', IDM_FILE_PRINT),
+        (b'Q', IDM_EDIT_BLOCK_COMMENT),
         (b'D', IDM_EDIT_DUP_LINE),
         (b'T', TRANSPOSE_LINE),
         (b'J', IDM_EDIT_JOIN_LINES),
@@ -3715,6 +5538,28 @@ pub fn run() -> io::Result<()> {
             cmd: cmd as u16,
         })
         .collect();
+    bindings.push(ACCEL {
+        fVirt: FVIRTKEY,
+        key: VK_F11,
+        cmd: IDM_VIEW_FULLSCREENTOGGLE as u16,
+    });
+    for index in 0..9 {
+        bindings.push(ACCEL {
+            fVirt: FVIRTKEY | FCONTROL,
+            key: b'1' as u16 + index,
+            cmd: IDM_VIEW_TAB1 as u16 + index,
+        });
+    }
+    bindings.push(ACCEL {
+        fVirt: FVIRTKEY | FCONTROL,
+        key: VK_TAB,
+        cmd: IDM_VIEW_TAB_NEXT as u16,
+    });
+    bindings.push(ACCEL {
+        fVirt: FVIRTKEY | FCONTROL | FSHIFT,
+        key: VK_TAB,
+        cmd: IDM_VIEW_TAB_PREV as u16,
+    });
     bindings.push(ACCEL {
         fVirt: FVIRTKEY | FCONTROL | FSHIFT,
         key: b'F' as u16,
@@ -3751,6 +5596,21 @@ pub fn run() -> io::Result<()> {
         cmd: SHOW_MENU_BAR as u16,
     });
     bindings.extend([
+        ACCEL {
+            fVirt: FVIRTKEY | FCONTROL | FSHIFT,
+            key: b'I' as u16,
+            cmd: FORMAT_DOCUMENT as u16,
+        },
+        ACCEL {
+            fVirt: FVIRTKEY | FALT,
+            key: b'0' as u16,
+            cmd: IDM_VIEW_FOLDALL as u16,
+        },
+        ACCEL {
+            fVirt: FVIRTKEY | FALT | FSHIFT,
+            key: b'0' as u16,
+            cmd: IDM_VIEW_UNFOLDALL as u16,
+        },
         ACCEL {
             fVirt: FVIRTKEY | FCONTROL,
             key: VK_F2,

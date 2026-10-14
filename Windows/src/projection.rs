@@ -5,12 +5,14 @@ use npp_editor_core::{Document, EditError, Selection};
 pub struct Projection {
     pub text: String,
     offsets: Vec<usize>,
+    boundaries: Vec<usize>,
 }
 
 impl Projection {
     pub fn new(source: &str) -> Self {
         let mut text = String::new();
         let mut offsets = vec![0];
+        let mut boundaries = vec![0];
         let mut chars = source.char_indices().peekable();
         while let Some((start, ch)) = chars.next() {
             match ch {
@@ -35,8 +37,13 @@ impl Projection {
                     offsets.push(start + ch.len_utf8());
                 }
             }
+            boundaries.push(text.len());
         }
-        Self { text, offsets }
+        Self {
+            text,
+            offsets,
+            boundaries,
+        }
     }
 
     pub fn byte_offset(&self, utf16: usize) -> usize {
@@ -65,6 +72,7 @@ impl Projection {
             .take_while(|(a, b)| a == b)
             .map(|(ch, _)| ch.len_utf8())
             .sum::<usize>();
+        let prefix = self.boundaries[self.boundaries.partition_point(|&b| b <= prefix) - 1];
         let suffix = self.text[prefix..]
             .chars()
             .rev()
@@ -72,6 +80,9 @@ impl Projection {
             .take_while(|(a, b)| a == b)
             .map(|(ch, _)| ch.len_utf8())
             .sum::<usize>();
+        let old_end = self.text.len() - suffix;
+        let old_end = self.boundaries[self.boundaries.partition_point(|&b| b < old_end)];
+        let suffix = self.text.len() - old_end;
         let start = self.byte_offset(self.text[..prefix].encode_utf16().count());
         let end = self.byte_offset(self.text[..self.text.len() - suffix].encode_utf16().count());
         let replacement = document

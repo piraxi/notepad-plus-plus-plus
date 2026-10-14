@@ -11,6 +11,7 @@ use std::{
 };
 use windows_sys::Win32::{
     Foundation::*,
+    Graphics::Gdi::*,
     UI::{
         Controls::{
             BST_CHECKED, Dialogs::*, EM_SETSEL, IsDlgButtonChecked, chx1, chx2, edt1, edt2, psh1,
@@ -21,6 +22,50 @@ use windows_sys::Win32::{
         WindowsAndMessaging::*,
     },
 };
+
+const SEARCH_TABS: usize = 620;
+const MODE_NORMAL: usize = 621;
+const MODE_EXTENDED: usize = 622;
+const MODE_REGEX: usize = 623;
+const WRAP: usize = 624;
+const COUNT: usize = 625;
+unsafe extern "system" fn layout_child(hwnd: HWND, replace: LPARAM) -> i32 {
+    unsafe {
+        use windows_sys::Win32::UI::Controls::*;
+        let id = GetDlgCtrlID(hwnd) as u32;
+        let position = if id == edt1 {
+            Some((110, 52, 390, 25))
+        } else if id == edt2 {
+            Some((110, 90, 390, 25))
+        } else if id == IDOK as u32 {
+            Some((535, 52, 110, 28))
+        } else if id == IDCANCEL as u32 {
+            Some((535, if replace != 0 { 166 } else { 90 }, 110, 28))
+        } else if id == psh1 {
+            Some((535, 90, 110, 28))
+        } else if id == psh2 {
+            Some((535, 128, 110, 28))
+        } else if id == chx1 {
+            Some((12, 138, 235, 25))
+        } else if id == chx2 {
+            Some((12, 170, 235, 25))
+        } else if id == grp1 {
+            Some((280, 138, 220, 65))
+        } else if id == rad1 {
+            Some((295, 165, 85, 25))
+        } else if id == rad2 {
+            Some((390, 165, 95, 25))
+        } else {
+            None
+        };
+        if let Some((x, y, width, height)) = position {
+            MoveWindow(hwnd, x, y, width, height, 1);
+        } else {
+            ShowWindow(hwnd, SW_HIDE);
+        }
+    }
+    1
+}
 
 static MESSAGE: OnceLock<u32> = OnceLock::new();
 static NEXT_ID: AtomicUsize = AtomicUsize::new(1);
@@ -36,6 +81,53 @@ unsafe extern "system" fn close_proc(
     // SAFETY: The boxed FINDREPLACEW and its buffers outlive the dialog. Capture
     // before default processing destroys controls and sends FR_DIALOGTERM.
     unsafe {
+        if message == WM_COMMAND {
+            match wp & 0xffff {
+                MODE_NORMAL | MODE_EXTENDED | MODE_REGEX => {
+                    crate::app::enqueue(crate::app::Event::SearchMode(match wp & 0xffff {
+                        MODE_EXTENDED => SearchMode::Extended,
+                        MODE_REGEX => SearchMode::Regex,
+                        _ => SearchMode::Normal,
+                    }));
+                    return 0;
+                }
+                WRAP => {
+                    crate::app::enqueue(crate::app::Event::Command(crate::app::SEARCH_WRAP));
+                    return 0;
+                }
+                COUNT => {
+                    crate::app::enqueue(crate::app::Event::Command(crate::app::SEARCH_COUNT));
+                    return 0;
+                }
+                _ => {}
+            }
+        }
+        if message == WM_NOTIFY && lp != 0 {
+            let header = &*(lp as *const windows_sys::Win32::UI::Controls::NMHDR);
+            if header.idFrom == SEARCH_TABS
+                && header.code == windows_sys::Win32::UI::Controls::TCN_SELCHANGE
+            {
+                let tab = SendMessageW(
+                    header.hwndFrom,
+                    windows_sys::Win32::UI::Controls::TCM_GETCURSEL,
+                    0,
+                    0,
+                );
+                ShowWindow(hwnd, SW_HIDE);
+                let input = GetDlgItem(hwnd, edt1 as i32);
+                let mut needle = vec![0u16; GetWindowTextLengthW(input) as usize + 1];
+                let length = GetWindowTextW(input, needle.as_mut_ptr(), needle.len() as i32);
+                crate::app::enqueue(crate::app::Event::SearchTab(
+                    match tab {
+                        0 => npp_compat::commands::IDM_SEARCH_FIND,
+                        1 => npp_compat::commands::IDM_SEARCH_REPLACE,
+                        _ => npp_compat::commands::IDM_SEARCH_FINDINFILES,
+                    },
+                    String::from_utf16_lossy(&needle[..length as usize]),
+                ));
+                return 0;
+            }
+        }
         if message == WM_CLOSE || (message == WM_COMMAND && wp & 0xffff == IDCANCEL as usize) {
             let data = &mut *(data as *mut FINDREPLACEW);
             GetDlgItemTextW(
@@ -230,6 +322,141 @@ impl SearchDialog {
             _needle: needle,
             _replacement: replacement,
         };
+        // Keep the system dialog's keyboard and replacement behavior, adding
+        // the same search navigation strip used by Find in Files.
+        unsafe {
+            use windows_sys::Win32::UI::Controls::*;
+            EnumChildWindows(hwnd, Some(layout_child), isize::from(replace));
+            let mut bounds = RECT {
+                left: 0,
+                top: 0,
+                right: 660,
+                bottom: 310,
+            };
+            AdjustWindowRectEx(
+                &mut bounds,
+                GetWindowLongPtrW(hwnd, GWL_STYLE) as u32,
+                0,
+                GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32,
+            );
+            SetWindowPos(
+                hwnd,
+                std::ptr::null_mut(),
+                0,
+                0,
+                bounds.right - bounds.left,
+                bounds.bottom - bounds.top,
+                SWP_NOMOVE | SWP_NOZORDER,
+            );
+            let mut client = RECT::default();
+            GetClientRect(hwnd, &mut client);
+            let tabs = CreateWindowExW(
+                0,
+                WC_TABCONTROLW,
+                windows_sys::core::w!(""),
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+                8,
+                4,
+                client.right - 16,
+                28,
+                hwnd,
+                SEARCH_TABS as _,
+                windows_sys::Win32::System::LibraryLoader::GetModuleHandleW(std::ptr::null()),
+                std::ptr::null(),
+            );
+            SendMessageW(
+                tabs,
+                WM_SETFONT,
+                GetStockObject(DEFAULT_GUI_FONT) as usize,
+                1,
+            );
+            for (index, title) in ["Find", "Replace", "Find in Files"].iter().enumerate() {
+                let mut title: Vec<u16> = title.encode_utf16().chain(Some(0)).collect();
+                let item = TCITEMW {
+                    mask: TCIF_TEXT,
+                    pszText: title.as_mut_ptr(),
+                    ..Default::default()
+                };
+                SendMessageW(tabs, TCM_INSERTITEMW, index, &item as *const _ as isize);
+            }
+            SendMessageW(tabs, TCM_SETCURSEL, usize::from(replace), 0);
+            for (class, title, id, x, y, width, style) in [
+                ("STATIC", "Find what:", 630, 12, 54, 95, 0),
+                ("STATIC", "Replace with:", 631, 12, 92, 95, 0),
+                (
+                    "BUTTON",
+                    "Normal",
+                    MODE_NORMAL,
+                    12,
+                    252,
+                    90,
+                    WS_TABSTOP | WS_GROUP | BS_AUTORADIOBUTTON as u32,
+                ),
+                (
+                    "BUTTON",
+                    "Extended",
+                    MODE_EXTENDED,
+                    110,
+                    252,
+                    110,
+                    BS_AUTORADIOBUTTON as u32,
+                ),
+                (
+                    "BUTTON",
+                    "Regular expression",
+                    MODE_REGEX,
+                    230,
+                    252,
+                    185,
+                    BS_AUTORADIOBUTTON as u32,
+                ),
+                (
+                    "BUTTON",
+                    "Wrap around",
+                    WRAP,
+                    12,
+                    204,
+                    200,
+                    WS_TABSTOP | BS_AUTOCHECKBOX as u32,
+                ),
+                ("BUTTON", "Count", COUNT, 535, 204, 110, WS_TABSTOP),
+            ] {
+                if id == 631 && !replace {
+                    continue;
+                }
+                let class: Vec<u16> = class.encode_utf16().chain(Some(0)).collect();
+                let title: Vec<u16> = title.encode_utf16().chain(Some(0)).collect();
+                let child = CreateWindowExW(
+                    0,
+                    class.as_ptr(),
+                    title.as_ptr(),
+                    WS_CHILD | WS_VISIBLE | style,
+                    x,
+                    y,
+                    width,
+                    26,
+                    hwnd,
+                    id as _,
+                    windows_sys::Win32::System::LibraryLoader::GetModuleHandleW(std::ptr::null()),
+                    std::ptr::null(),
+                );
+                SendMessageW(
+                    child,
+                    WM_SETFONT,
+                    GetStockObject(DEFAULT_GUI_FONT) as usize,
+                    1,
+                );
+            }
+            CheckDlgButton(
+                hwnd,
+                WRAP as i32,
+                if options.wrap {
+                    BST_CHECKED
+                } else {
+                    BST_UNCHECKED
+                },
+            );
+        }
         // SAFETY: The descriptor's stable allocation is retained through Drop's DestroyWindow.
         if unsafe { SetWindowSubclass(hwnd, Some(close_proc), 2, dialog._data.get() as usize) } == 0
         {
@@ -247,6 +474,12 @@ impl SearchDialog {
         }
         // SAFETY: The live owned modeless dialog and its Find What edit are valid.
         unsafe {
+            SendMessageW(
+                GetDlgItem(self.hwnd, SEARCH_TABS as i32),
+                windows_sys::Win32::UI::Controls::TCM_SETCURSEL,
+                usize::from(replace),
+                0,
+            );
             ShowWindow(self.hwnd, SW_SHOW);
             SetForegroundWindow(self.hwnd);
             windows_sys::Win32::UI::Input::KeyboardAndMouse::SetFocus(GetDlgItem(
@@ -259,6 +492,24 @@ impl SearchDialog {
 
     pub fn is_replace(&self) -> bool {
         self.replace
+    }
+    pub fn hide(&self) {
+        unsafe {
+            ShowWindow(self.hwnd, SW_HIDE);
+        }
+    }
+    pub fn set_wrap(&self, wrap: bool) {
+        unsafe {
+            windows_sys::Win32::UI::Controls::CheckDlgButton(
+                self.hwnd,
+                WRAP as i32,
+                if wrap {
+                    BST_CHECKED
+                } else {
+                    windows_sys::Win32::UI::Controls::BST_UNCHECKED
+                },
+            );
+        }
     }
 
     pub fn set_replacement_text(&self, text: &str) {
@@ -294,6 +545,8 @@ impl SearchDialog {
             if self.replace { "Replace" } else { "Find" },
             if mode == SearchMode::Extended {
                 "Extended"
+            } else if mode == SearchMode::Regex {
+                "Regular expression"
             } else {
                 "Normal"
             }
@@ -301,6 +554,20 @@ impl SearchDialog {
         let title: Vec<u16> = title.encode_utf16().chain(Some(0)).collect();
         // SAFETY: Live dialog copies the NUL-terminated temporary title.
         unsafe {
+            EnableWindow(
+                GetDlgItem(self.hwnd, chx1 as i32),
+                i32::from(mode != SearchMode::Regex),
+            );
+            windows_sys::Win32::UI::Controls::CheckRadioButton(
+                self.hwnd,
+                MODE_NORMAL as i32,
+                MODE_REGEX as i32,
+                match mode {
+                    SearchMode::Normal => MODE_NORMAL,
+                    SearchMode::Extended => MODE_EXTENDED,
+                    SearchMode::Regex => MODE_REGEX,
+                } as i32,
+            );
             SetWindowTextW(self.hwnd, title.as_ptr());
         }
     }

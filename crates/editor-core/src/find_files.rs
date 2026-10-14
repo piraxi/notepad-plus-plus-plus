@@ -210,7 +210,7 @@ pub fn search_files(
                     contents.clone()
                 } else {
                     let bytes = std::fs::read(&path)?;
-                    let (encoding, text) = Encoding::decode(&bytes)
+                    let (encoding, text) = Encoding::detect_file(&bytes)
                         .or_else(|_| {
                             Encoding::Windows1252
                                 .decode_as(&bytes)
@@ -219,6 +219,19 @@ pub fn search_files(
                         .map_err(io::Error::other)?;
                     (text, encoding)
                 };
+                // Executables, object files and other binaries otherwise produce
+                // unreadable previews. Occasional escape/control characters in
+                // text logs are retained and escaped by the results view.
+                let sample: Vec<_> = text.chars().take(8192).collect();
+                let controls = sample
+                    .iter()
+                    .filter(|&&c| {
+                        c.is_control() && !matches!(c, '\t' | '\r' | '\n' | '\u{c}' | '\u{1b}')
+                    })
+                    .count();
+                if text.contains('\0') || (controls > 4 && controls * 100 > sample.len()) {
+                    return Ok(Vec::new());
+                }
                 let doc = Document::from_bytes(text.as_bytes()).map_err(io::Error::other)?;
                 let ranges = if let Some(regex) = &regex {
                     let mut ranges = Vec::new();

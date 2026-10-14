@@ -43,18 +43,23 @@ pub enum EditError {
     ReadOnly,
     EmptySearch,
     InvalidSearchEscape,
+    InvalidRegex(String),
     UnrepresentableEncoding,
     InvalidNumericLine(usize),
     InvalidSortKey,
 }
 impl fmt::Display for EditError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Self::InvalidRegex(error) = self {
+            return write!(f, "Regular expression: {error}");
+        }
         if let Self::InvalidNumericLine(line) = self {
             return write!(f, "Unable to perform numeric sorting due to line {line}.");
         }
         f.write_str(match self {
             Self::InvalidRange => "position is out of bounds or splits a UTF-8 character",
             Self::InvalidNumericLine(_) => unreachable!(),
+            Self::InvalidRegex(_) => unreachable!(),
             Self::InvalidSortKey => "Could not create a locale sort key",
             Self::ReadOnly => "document is read-only",
             Self::EmptySearch => "search text must not be empty",
@@ -173,7 +178,8 @@ impl Document {
         let bytes = std::fs::read(path)?;
         let mut document = match encoding {
             Some(encoding) => Self::from_bytes_as(&bytes, encoding),
-            None => Self::from_bytes(&bytes),
+            None => Encoding::detect_file(&bytes)
+                .and_then(|(encoding, _)| Self::from_bytes_as(&bytes, encoding)),
         }
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
         document.path = Some(path.to_owned());
@@ -226,6 +232,22 @@ impl Document {
     }
     pub fn path(&self) -> Option<&Path> {
         self.path.as_deref()
+    }
+
+    /// Change a saved file's identity only after the filesystem rename succeeds.
+    /// Text, savepoint, protection and history remain attached to the buffer.
+    pub fn rename_with(
+        &mut self,
+        destination: &Path,
+        rename: impl FnOnce(&Path, &Path) -> std::io::Result<()>,
+    ) -> std::io::Result<()> {
+        let original = self
+            .path
+            .as_deref()
+            .ok_or_else(|| std::io::Error::other("Save the document before renaming it"))?;
+        rename(original, destination)?;
+        self.path = Some(destination.to_owned());
+        Ok(())
     }
     pub fn selection(&self) -> Selection {
         self.state.selection

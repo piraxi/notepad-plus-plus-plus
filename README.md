@@ -6,6 +6,36 @@ including plugins. **This is an early implementation, not a usable replacement
 for Notepad++ yet.** A basic Windows graphical executable is available; application
 plugin hosting and most advanced editor features remain unimplemented.
 
+## Menu and UI expansion (14 October 2026)
+
+The Windows app now includes a themed toolbar, Consolas editor font, logical
+line-number margin, word wrap, full screen and always-on-top controls. Tabs have
+close targets, middle-click closing, drag reordering and a context menu. Native
+tab updates preserve the control rather than deleting every tab on each edit.
+
+Find, Replace and Find in Files have linked navigation tabs. Find/Replace offer
+Normal, Extended and regular-expression modes, Wrap Around and Count controls.
+Find in Files has explicit client sizing and separate Stop/Close actions.
+Current-document regex search supports lookarounds, capture-group replacement,
+counting and bookmark matching through the portable core. Its syntax is
+fancy-regex, not full Boost compatibility.
+
+Added commands include line/block comments, word completion from the current
+document, selection redaction, opening selected paths, file rename, Recycle Bin
+deletion retaining the buffer, printing, all four hash families in Tools,
+tab sorting, basic macro recording/playback/repetition and JSON save/load,
+Run with file variables, and Help links/information. Preferences persists
+indentation, wrap and interface settings when accepted.
+
+**Full non-plugin menu parity is not complete.** The working plan is in
+[`docs/menu-implementation-plan.md`](docs/menu-implementation-plan.md).
+[`docs/menu-inventory.csv`](docs/menu-inventory.csv) lists the supplied source's
+menu commands and direct code references; these references are not proof of
+complete behavior. Generate it with `python scripts/menu-inventory.py`.
+Language styling, folding, multiple/rectangular selections, multiple views,
+advanced panels/settings, and the macOS/Linux frontends still require work.
+The detailed notes below include historical limitations superseded by this section.
+
 ## Layout
 
 - `notepad_plus_plus/`: supplied upstream reference source, including Scintilla
@@ -255,19 +285,37 @@ fixed-width numeric escapes: `\b` (8 binary digits), `\o` (3 octal), `\d`
 The mode applies to finding and replacement, including F3 and Replace All;
 dialog titles show Normal or Extended. Unknown/incomplete escapes remain literal.
 Paired surrogate escapes are supported; unpaired surrogates are rejected.
-The core supports NUL matches/replacements, but the native view rejects NUL
-replacement text before editing. Regex, search in files, and the complete
-Notepad++ search dialog remain outstanding.
+The core and native projection support NUL matches/replacements. Regex and
+Find in Files are available; complete Notepad++ search-dialog parity remains
+outstanding. Find in Files detects BOM-less UTF-16 and omits binary content.
 The Search menu also provides Go to Matching Brace and Select Matching Braces
 for `()`, `[]`, and `{}`. These prefer the brace before the caret and handle
 nesting. Matching is currently plain text; lexer-aware filtering and automatic
 brace highlighting remain pending.
 
-The initial view uses the Windows multiline text control. A projection converts
-UTF-16 control positions to UTF-8 core positions and preserves unchanged mixed
-line endings when editing. Files containing embedded NUL are explicitly rejected
-by this view. This control does not yet provide syntax coloring, line numbers,
-folding, rectangular selection, or the Scintilla message interface.
+The Windows editor now statically links the supplied Scintilla and Lexilla sources.
+All 94 built-in language choices use the upstream lexer, colours and keywords.
+Native line numbers, indentation guides and clickable fold markers accompany
+View commands for folding/unfolding all, the current block, or levels 1–8.
+Collapsed sections are retained when switching tabs. Embedded NUL is rendered
+directly and preserved when editing, copying and saving. The Rust core retains
+document history, encoding and unchanged mixed line endings.
+
+Edit > Formatting provides Format Document (Ctrl+Shift+I) and Format Selection.
+JSON and XML receive structured layout; code receives lexer-aware indentation
+without rewriting strings/comments. XML mixed content and `xml:space="preserve"`
+are retained. Python-style indentation nesting is retained while normalizing its
+width. Other languages preserve existing indentation when a safe rule is not
+available. This is not a replacement for language-specific tools such as rustfmt
+or Black. Language-aware auto-indent handles block openings and paired brackets.
+Formatting is a single undoable edit and respects the configured tabs/spaces.
+
+The Language menu includes the supplied source's 94 built-in choices, extension
+detection, per-tab overrides, language-aware comments and keyword completion,
+and session persistence. Basic custom definitions use a local JSON format; native
+Notepad++ UDL XML import and custom-language syntax styling remain unimplemented. See
+`docs/menu-implementation-plan.md` and `docs/menu-inventory.csv` for the remaining
+menu gaps. The inventory is not a claim of full behavioral parity.
 
 ## Implemented foundation
 
@@ -332,7 +380,7 @@ message contract, notification layouts, docking, menus, and lifecycle behavior.
 The ABI declarations here are only the start. Windows DLLs cannot be treated as
 cross-platform plugins; portable extensions will need an additional API.
 
-Full parity remains outstanding: the complete GUI/editor renderer, syntax lexing/folding,
+Full parity remains outstanding: advanced editor configuration and custom UDL styling,
 multi-view editing, rectangular/multiple selections, regex and file search,
 all editing commands, sessions/recovery, preferences/themes/localization,
 macros, project/function panels, printing, plugin loading/administration and

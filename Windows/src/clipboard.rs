@@ -46,7 +46,71 @@ impl Drop for Clipboard {
 }
 
 pub fn write_text(owner: HWND, text: &str) -> io::Result<()> {
-    write_os_text(owner, OsStr::new(text))
+    if !text.contains('\0') {
+        return write_os_text(owner, OsStr::new(text));
+    }
+    // CF_UNICODETEXT cannot carry embedded NUL. Supply a readable fallback
+    // and a length-delimited UTF-8 representation for lossless editor paste.
+    write_os_text(owner, OsStr::new(&text.replace('\0', "␀")))?;
+    let mut payload = (text.len() as u64).to_le_bytes().to_vec();
+    payload.extend_from_slice(text.as_bytes());
+    unsafe {
+        if OpenClipboard(owner) == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let _clipboard = Clipboard;
+        let format = RegisterClipboardFormatW(windows_sys::core::w!("NotepadPlusPlusRust.UTF8"));
+        if format == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let mut memory = TextMemory(GlobalAlloc(GMEM_MOVEABLE, payload.len()));
+        if memory.0.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+        let pointer = GlobalLock(memory.0).cast::<u8>();
+        if pointer.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+        std::ptr::copy_nonoverlapping(payload.as_ptr(), pointer, payload.len());
+        GlobalUnlock(memory.0);
+        if SetClipboardData(format, memory.0).is_null() {
+            return Err(io::Error::last_os_error());
+        }
+        memory.0 = null_mut();
+    }
+    Ok(())
+}
+
+pub fn read_registered(owner: HWND, name: &str) -> io::Result<Option<Vec<u8>>> {
+    let name: Vec<u16> = name.encode_utf16().chain(Some(0)).collect();
+    unsafe {
+        let format = RegisterClipboardFormatW(name.as_ptr());
+        if format == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if IsClipboardFormatAvailable(format) == 0 {
+            return Ok(None);
+        }
+        if OpenClipboard(owner) == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let _clipboard = Clipboard;
+        let memory = GetClipboardData(format);
+        if memory.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+        let length = GlobalSize(memory);
+        if length > isize::MAX as usize {
+            return Err(io::Error::other("Invalid clipboard payload size"));
+        }
+        let pointer = GlobalLock(memory).cast::<u8>();
+        if pointer.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+        let bytes = std::slice::from_raw_parts(pointer, length).to_vec();
+        GlobalUnlock(memory);
+        Ok(Some(bytes))
+    }
 }
 
 fn decode_text(units: &[u16]) -> io::Result<String> {
@@ -60,6 +124,18 @@ fn decode_text(units: &[u16]) -> io::Result<String> {
 }
 
 pub fn read_text(owner: HWND) -> io::Result<Option<String>> {
+    if let Some(bytes) = read_registered(owner, "NotepadPlusPlusRust.UTF8")? {
+        if let Some(header) = bytes.get(..8) {
+            let length = u64::from_le_bytes(header.try_into().unwrap());
+            if let Ok(length) = usize::try_from(length) {
+                if let Some(payload) = bytes.get(8..).and_then(|data| data.get(..length)) {
+                    if let Ok(text) = std::str::from_utf8(payload) {
+                        return Ok(Some(text.to_owned()));
+                    }
+                }
+            }
+        }
+    }
     const CF_UNICODETEXT: u32 = 13;
     // SAFETY: Clipboard ownership and memory locking bound the handle lifetime;
     // GlobalSize bounds the read, including malformed unterminated payloads.

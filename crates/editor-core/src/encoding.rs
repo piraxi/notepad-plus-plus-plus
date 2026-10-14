@@ -98,6 +98,38 @@ impl fmt::Display for EncodeError {
 impl Error for EncodeError {}
 
 impl Encoding {
+    /// File-only sniffing. Keep `decode` strict for internal UTF-8 buffers.
+    pub fn detect_file(bytes: &[u8]) -> Result<(Self, String), DecodeError> {
+        if !bytes.starts_with(&[0xef, 0xbb, 0xbf])
+            && !bytes.starts_with(&[0xff, 0xfe])
+            && !bytes.starts_with(&[0xfe, 0xff])
+            && bytes.len() >= 4
+            && bytes.len() % 2 == 0
+        {
+            let sample = &bytes[..bytes.len().min(8192)];
+            let pairs = sample.len() / 2;
+            let even = sample.chunks_exact(2).filter(|p| p[0] == 0).count();
+            let odd = sample.chunks_exact(2).filter(|p| p[1] == 0).count();
+            let candidate = if odd * 3 >= pairs && even * 20 <= pairs {
+                Some(Self::Utf16LeNoBom)
+            } else if even * 3 >= pairs && odd * 20 <= pairs {
+                Some(Self::Utf16BeNoBom)
+            } else {
+                None
+            };
+            if let Some(encoding) = candidate {
+                if let Ok(text) = encoding.decode_as(bytes) {
+                    if !text
+                        .chars()
+                        .any(|c| c.is_control() && !matches!(c, '\t' | '\r' | '\n' | '\u{c}'))
+                    {
+                        return Ok((encoding, text));
+                    }
+                }
+            }
+        }
+        Self::decode(bytes)
+    }
     /// Formats whose interpretation must be retained for reload and reopen.
     /// These cannot be inferred reliably from a Unicode byte-order mark.
     pub fn requires_explicit_decode(self) -> bool {

@@ -3,6 +3,7 @@
 
 mod bookmarks;
 mod case_fold;
+mod comments;
 mod decimal_sort;
 mod disk;
 mod document;
@@ -11,6 +12,7 @@ mod encoding;
 pub mod find_files;
 mod integer_sort;
 mod random_sort;
+pub mod regex_search;
 mod search;
 mod selection_gesture;
 mod session;

@@ -6,13 +6,14 @@ pub enum SearchMode {
     #[default]
     Normal,
     Extended,
+    Regex,
 }
 
 impl SearchMode {
     /// Notepad++ Extended syntax uses fixed-width numeric escapes, interpreted
     /// as UTF-16 units. Unknown and incomplete escapes remain literal text.
     pub fn decode(self, input: &str) -> Result<Cow<'_, str>, EditError> {
-        if self == Self::Normal || !input.contains('\\') {
+        if self != Self::Extended || !input.contains('\\') {
             return Ok(Cow::Borrowed(input));
         }
         let input: Vec<u16> = input.encode_utf16().collect();
@@ -157,6 +158,14 @@ impl Document {
         needle: &str,
         options: SearchOptions,
     ) -> Result<Vec<Range<usize>>, EditError> {
+        if options.mode == SearchMode::Regex {
+            return crate::regex_search::matches(
+                self.text(),
+                needle,
+                options,
+                0..self.text().len(),
+            );
+        }
         let needle = prepare_needle(needle, options)?;
         Ok(match_ranges(self.text(), &needle, options, 0..self.text().len()).collect())
     }
@@ -169,6 +178,22 @@ impl Document {
     ) -> Result<Option<Range<usize>>, EditError> {
         if !self.text().is_char_boundary(start) {
             return Err(EditError::InvalidRange);
+        }
+        if options.mode == SearchMode::Regex {
+            let matches = self.search_matches(needle, options)?;
+            return Ok(match options.direction {
+                SearchDirection::Forward => matches
+                    .iter()
+                    .find(|m| m.start >= start)
+                    .cloned()
+                    .or_else(|| options.wrap.then(|| matches.first().cloned()).flatten()),
+                SearchDirection::Backward => matches
+                    .iter()
+                    .rev()
+                    .find(|m| m.end <= start)
+                    .cloned()
+                    .or_else(|| options.wrap.then(|| matches.last().cloned()).flatten()),
+            });
         }
         let needle = prepare_needle(needle, options)?;
         let scan = |range| match_ranges(self.text(), &needle, options, range);
@@ -218,6 +243,23 @@ impl Document {
         scope: Range<usize>,
     ) -> Result<usize, EditError> {
         self.validate(&scope)?;
+        if options.mode == SearchMode::Regex {
+            let matches = crate::regex_search::matches(self.text(), needle, options, scope)?;
+            let mut lines = std::collections::BTreeSet::new();
+            for range in &matches {
+                let starts = self.line_starts();
+                let first = starts
+                    .partition_point(|&p| p <= range.start)
+                    .saturating_sub(1);
+                let last = starts
+                    .partition_point(|&p| p < range.end)
+                    .saturating_sub(1)
+                    .max(first);
+                lines.extend(first..=last);
+            }
+            self.bookmarks.0.extend(lines);
+            return Ok(matches.len());
+        }
         let needle = prepare_needle(needle, options)?;
         let limit = scope.end;
         let mut previous_end = 0;
@@ -253,6 +295,9 @@ impl Document {
         scope: Range<usize>,
     ) -> Result<usize, EditError> {
         self.validate(&scope)?;
+        if options.mode == SearchMode::Regex {
+            return Ok(crate::regex_search::matches(self.text(), needle, options, scope)?.len());
+        }
         let needle = prepare_needle(needle, options)?;
         let limit = scope.end;
         let mut end = 0;
@@ -304,6 +349,18 @@ impl Document {
         scope: Range<usize>,
     ) -> Result<usize, EditError> {
         self.validate(&scope)?;
+        if options.mode == SearchMode::Regex {
+            let edits = crate::regex_search::replacements(
+                self.text(),
+                needle,
+                replacement,
+                options,
+                scope,
+            )?;
+            let count = edits.len();
+            self.apply_edits(&edits)?;
+            return Ok(count);
+        }
         let needle = prepare_needle(needle, options)?;
         let limit = scope.end;
         let matches = match_ranges(self.text(), &needle, options, scope);
